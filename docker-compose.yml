@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL 16 (Ops DB + LangGraph Checkpoints)
+  postgres:
+    image: postgres:16
+    container_name: rag_postgres
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secretpassword
+      POSTGRES_DB: k8s_ops_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # 2. Qdrant (Dense + Sparse Vector Database)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag_qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # 3. Redis (For 5-Tier Caching)
+  redis:
+    image: redis:latest
+    container_name: rag_redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
+  qdrant_data:
