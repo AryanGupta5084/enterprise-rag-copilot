@@ -1,0 +1,11 @@
+fastapi==0.137.0
+langchain_core==1.4.7
+langchain_google_genai==4.2.5
+langchain_huggingface==1.2.2
+pydantic==2.13.4
+python-dotenv==1.2.2
+qdrant_client==1.18.0
+redis==8.0.0
+uvicorn==0.22.0
+sentence-transformers
+langchain_tavily
