@@ -51,7 +51,6 @@ async def ask_copilot(request: QueryRequest):
     
     print(f"\n⚡ Triggering Unified LangGraph State Machine for '{destination}' Intent...")
     
-    # Generate a unique thread ID so LangGraph can remember this specific conversation
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
     
@@ -64,10 +63,8 @@ async def ask_copilot(request: QueryRequest):
         "final_answer": ""
     }
     
-    # Run the unified graph! It will automatically route to RAG or SQL.
     final_state = app_graph.invoke(initial_state, config=config)
     
-    # Check if the graph hit our SQL interrupt() breakpoint
     state_snapshot = app_graph.get_state(config)
     if state_snapshot.next and "execute_sql" in state_snapshot.next:
         print(f"⚠️ [HITL] Graph execution paused. Waiting for human approval on Thread: {thread_id}")
@@ -77,7 +74,6 @@ async def ask_copilot(request: QueryRequest):
         response_data["final_answer"] = f"Your query is ready. Please review it and use the /approve endpoint with thread_id: {thread_id}"
         return response_data
         
-    # Populate the final successful response
     response_data["status"] = "Executed via Unified LangGraph State Machine"
     response_data["generated_sql"] = final_state.get("generated_sql", "")
     response_data["final_answer"] = final_state.get("final_answer", "")
@@ -96,13 +92,11 @@ async def approve_sql_execution(request: ApprovalRequest):
     config = {"configurable": {"thread_id": request.thread_id}}
     state_snapshot = app_graph.get_state(config)
     
-    # Verify the graph is actually paused
     if not state_snapshot.next or "execute_sql" not in state_snapshot.next:
         return {"status": "Error", "message": "No pending execution found for this thread."}
         
     if request.is_approved:
         print("\n✅ [HITL] Human Approved! Resuming execution...")
-        # Resume the graph by passing None (meaning: continue with no changes to state)
         final_state = app_graph.invoke(None, config=config)
         
         return {
