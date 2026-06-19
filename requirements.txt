@@ -9,3 +9,4 @@ redis==8.0.0
 uvicorn==0.22.0
 sentence-transformers
 langchain_tavily
+langgraph
