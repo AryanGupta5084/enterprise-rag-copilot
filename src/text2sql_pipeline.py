@@ -3,7 +3,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
 import sqlite3
 
-# A dummy schema for Kubernetes operations (matching the theme of your copilot)
 DB_SCHEMA = """
 Table: pod_metrics
 Columns: pod_name (VARCHAR), namespace (VARCHAR), cpu_usage_cores (FLOAT), memory_usage_mb (FLOAT), status (VARCHAR)
@@ -30,7 +29,6 @@ def generate_sql(query: str) -> str:
     
     try:
         sql_query = chain.invoke({"schema": DB_SCHEMA, "query": query})
-        # Clean up any markdown the LLM might stubbornly include
         sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
         print(f"✅ [Text2SQL] Generated Query: {sql_query}")
         return sql_query
@@ -47,12 +45,10 @@ def validate_sql(sql_query: str) -> bool:
     dangerous_keywords = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "EXECUTE"]
     upper_query = sql_query.upper().strip()
     
-    # 1. Must be a SELECT statement (SELECT-only rule from architecture)
     if not upper_query.startswith("SELECT"):
         print("❌ [Text2SQL] Validation Failed: Query must start with SELECT.")
         return False
         
-    # 2. Must not contain dangerous mutations (Blocklist rule from architecture)
     for keyword in dangerous_keywords:
         if f" {keyword} " in f" {upper_query} " or upper_query.startswith(f"{keyword} "):
             print(f"❌ [Text2SQL] Validation Failed: Dangerous keyword '{keyword}' detected!")
@@ -66,7 +62,6 @@ def setup_mock_database():
     conn = sqlite3.connect("kubernetes_mock.db")
     cursor = conn.cursor()
     
-    # Create the pod_metrics table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS pod_metrics (
             pod_name TEXT,
@@ -77,7 +72,6 @@ def setup_mock_database():
         )
     ''')
     
-    # Insert some dummy data if the table is empty
     cursor.execute("SELECT COUNT(*) FROM pod_metrics")
     if cursor.fetchone() == 0:
         mock_data = [
@@ -105,7 +99,6 @@ def execute_sql(sql_query: str) -> dict:
         cursor = conn.cursor()
         cursor.execute(sql_query)
         
-        # Fetch the column names and the actual data rows
         columns = [description for description in cursor.description]
         rows = cursor.fetchall()
         conn.close()
@@ -132,7 +125,6 @@ def format_sql_results(db_results: dict) -> list[dict]:
     columns = db_results["columns"]
     formatted_rows = []
     
-    # Convert each row tuple into a readable string like "pod_name: nginx, status: Running"
     for row in db_results["rows"]:
         row_dict = dict(zip(columns, row))
         row_string = ", ".join([f"{k}: {v}" for k, v in row_dict.items()])
