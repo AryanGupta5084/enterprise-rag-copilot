@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from src.router import route_user_query
 from src.rag_pipeline import generate_hyde_documents, crag_grader_and_fallback, generate_final_answer, self_rag_reflect
@@ -6,12 +6,20 @@ from src.vector_store import get_embedding_with_cache, search_qdrant, rerank_doc
 from src.text2sql_pipeline import generate_sql, validate_sql, execute_sql, format_sql_results
 from src.orchestrator import app_graph
 import uuid
+from src.security import SecureQueryRequest, truncate_input, scan_input_llm_guard, redact_pii
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 app = FastAPI(
     title="Enterprise RAG Copilot API",
     description="Production-grade Kubernetes SRE copilot using LangGraph, Qdrant, Postgres, and Redis.",
     version="1.0.0"
 )
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 class QueryRequest(BaseModel):
     query: str
@@ -36,15 +44,24 @@ async def health_check():
     }
 
 @app.post("/ask")
-async def ask_copilot(request: QueryRequest):
+@limiter.limit("20/minute")
+async def ask_copilot(request: Request, payload: SecureQueryRequest):
     """
     Accepts a user query, routes it via the Intent Router, 
     and caches the decision in Redis.
     """
-    destination = route_user_query(request.query)
+    query_text = payload.query
+    query_text = truncate_input(query_text, max_tokens=1000)
+    try:
+        query_text = scan_input_llm_guard(query_text)
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail=str(e))
+    query_text = redact_pii(query_text)
+    destination = route_user_query(query_text)
     
     response_data = {
-        "query": request.query,
+        "query": query_text,
         "routed_to": destination,
         "message": f"Query routed to the {destination.upper()} pipeline."
     }
@@ -55,7 +72,7 @@ async def ask_copilot(request: QueryRequest):
     config = {"configurable": {"thread_id": thread_id}}
     
     initial_state = {
-        "query": request.query,
+        "query": query_text,
         "destination": destination,
         "context_docs": [],
         "generated_sql": "",
