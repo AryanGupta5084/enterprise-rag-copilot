@@ -15,7 +15,6 @@ class SecureQueryRequest(BaseModel):
         """
         print("🛡️ [Security L1] Scanning input with Regex for injection patterns...")
         
-        # Common prompt injection triggers
         injection_patterns = [
             r"(?i)ignore\s+all\s+previous\s+instructions",
             r"(?i)you\s+are\s+now",
@@ -39,13 +38,11 @@ def truncate_input(text: str, max_tokens: int = 1000) -> str:
     """
     print(f"\n🛡️ [Security L5] Checking token count for input...")
     
-    # Load the encoding for standard OpenAI models (e.g., GPT-4o)
     encoding = tiktoken.get_encoding("cl100k_base")
     tokens = encoding.encode(text)
     
     if len(tokens) > max_tokens:
         print(f"⚠️ [Security L5] Input exceeded {max_tokens} tokens (Received {len(tokens)} tokens). Truncating...")
-        # Truncate the list of tokens to the max_tokens limit and decode back to text
         truncated_text = encoding.decode(tokens[:max_tokens])
         return truncated_text
         
@@ -59,14 +56,12 @@ def scan_input_llm_guard(prompt: str) -> str:
     """
     print(f"\n🛡️ [Security L2] Running advanced LLM-Guard scan for toxicity and injections...")
     
-    # Initialize the specific scanners we want to use
     scanners = [
         PromptInjection(), 
         Toxicity()
     ]
     
     for scanner in scanners:
-        # The scanner evaluates the text and returns whether it is safe
         sanitized_prompt, is_valid, risk_score = scanner.scan(prompt)
         
         if not is_valid:
@@ -83,11 +78,9 @@ def redact_pii(text: str) -> str:
     """
     print(f"\n🛡️ [Security L7a] Scanning for sensitive PII...")
     
-    # Regex to catch standard Email addresses
     email_pattern = r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+'
     sanitized_text = re.sub(email_pattern, "[EMAIL_REDACTED]", text)
     
-    # Regex to catch standard 14-16 digit Credit Card numbers (with or without dashes/spaces)
     cc_pattern = r'\b(?:\d[ -]*?){13,16}\b'
     sanitized_text = re.sub(cc_pattern, "[CREDIT_CARD_REDACTED]", sanitized_text)
     
