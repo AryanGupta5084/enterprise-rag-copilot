@@ -10,3 +10,5 @@ uvicorn==0.22.0
 sentence-transformers
 langchain_tavily
 langgraph
+slowapi
+tiktoken
