@@ -137,3 +137,22 @@ def check_token_budget(username: str, estimated_tokens: int) -> None:
         
     DAILY_TOKEN_USAGE[username] += estimated_tokens
     print(f"✅ [Security L6] Budget OK. '{username}' has consumed {DAILY_TOKEN_USAGE[username]}/100000 tokens today.")
+
+def spotlight_context(retrieved_docs: list[dict]) -> str:
+    """
+    L8 Guardrail: Wraps the final retrieved and reranked documents in strict 
+    XML tags to prevent context-poisoning attacks during LLM generation.
+    """
+    print("\n🛡️ [Security L8] Spotlighting context with XML-delimited chunks...")
+    
+    if not retrieved_docs:
+        return "<retrieved_context>\n  No documents found.\n</retrieved_context>"
+        
+    xml_context = "<retrieved_context>\n"
+    for i, doc in enumerate(retrieved_docs):
+        doc_text = doc.get("text", str(doc)) 
+        xml_context += f"  <document index='{i+1}'>\n    {doc_text}\n  </document>\n"
+    xml_context += "</retrieved_context>"
+    
+    print("✅ [Security L8] Context successfully wrapped in XML tags.")
+    return xml_context

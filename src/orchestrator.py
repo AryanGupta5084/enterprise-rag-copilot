@@ -3,6 +3,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from src.text2sql_pipeline import generate_sql, validate_sql, execute_sql, format_sql_results
 from src.rag_pipeline import generate_final_answer, self_rag_reflect, search_qdrant, rerank_documents, generate_hyde_documents
+from src.security import spotlight_context
 
 class GraphState(TypedDict):
     query: str
@@ -51,9 +52,10 @@ def rag_retrieval_node(state: dict):
     raw_retrieved_docs = search_qdrant(search_queries)
     print("⚖️ [RAG Pipeline] Reranking documents using Cross-Encoder...")
     final_ranked_docs = rerank_documents(query, raw_retrieved_docs)
-    
-    state["context_docs"] = final_ranked_docs
-    state["hyde_documents"] = hyde_docs
+
+    safe_xml_context = spotlight_context(final_ranked_docs)
+    state["context_docs"] = safe_xml_context
+    state["hyde_documents"] = hyde_docs 
     
     return state
 
