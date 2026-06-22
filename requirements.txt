@@ -12,3 +12,10 @@ langchain_tavily
 langgraph
 slowapi
 tiktoken
+psycopg2
+langgraph-checkpoint-postgres
+psycopg
+streamlit
+requests
+PyJWT
+llm-guard
