@@ -11,6 +11,18 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
+class CopilotResponse(BaseModel):
+    """
+    L9 Guardrail: Pydantic Schema Validation.
+    Forces the final API output into a strict, predictable JSON schema.
+    """
+    query: str
+    routed_to: str
+    message: str
+    status: str
+    generated_sql: str
+    final_answer: str
+
 app = FastAPI(
     title="Enterprise RAG Copilot API",
     description="Production-grade Kubernetes SRE copilot using LangGraph, Qdrant, Postgres, and Redis.",
@@ -91,9 +103,15 @@ async def ask_copilot(request: Request, payload: SecureQueryRequest):
         response_data["final_answer"] = f"Your query is ready. Please review it and use the /approve endpoint with thread_id: {thread_id}"
         return response_data
         
+    raw_final_answer = final_state.get("final_answer", "")
+
+    print("\n🛡️ [Security L7b] Scanning generated LLM response for PII leaks...")
+    safe_final_answer = redact_pii(raw_final_answer)
+    
+    # Populate the final successful response ensuring it matches the L9 schema
     response_data["status"] = "Executed via Unified LangGraph State Machine"
     response_data["generated_sql"] = final_state.get("generated_sql", "")
-    response_data["final_answer"] = final_state.get("final_answer", "")
+    response_data["final_answer"] = safe_final_answer
     
     return response_data
 
