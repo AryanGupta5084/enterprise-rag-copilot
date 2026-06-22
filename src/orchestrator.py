@@ -4,6 +4,11 @@ from langgraph.checkpoint.memory import MemorySaver
 from src.text2sql_pipeline import generate_sql, validate_sql, execute_sql, format_sql_results
 from src.rag_pipeline import generate_final_answer, self_rag_reflect, search_qdrant, rerank_documents, generate_hyde_documents
 from src.security import spotlight_context
+from src.cache import (
+    get_cached_sql_gen, set_cached_sql_gen,
+    get_cached_sql_result, set_cached_sql_result,
+    get_cached_rag_answer, set_cached_rag_answer
+)
 
 class GraphState(TypedDict):
     query: str
@@ -14,16 +19,36 @@ class GraphState(TypedDict):
     final_answer: str
 
 def sql_generation_node(state: GraphState):
-    """Handles the green Text2SQL generation and validation block."""
+    """Handles the green Text2SQL generation and validation block with Tier 3 Caching."""
     print("\n🟢 [LangGraph Node] Entering SQL Generation...")
-    sql = generate_sql(state["query"])
+    query = state["query"]
+    
+    cached_sql = get_cached_sql_gen(query)
+    if cached_sql:
+        is_safe = validate_sql(cached_sql)
+        return {"generated_sql": cached_sql, "is_sql_safe": is_safe}
+        
+    sql = generate_sql(query)
+    
+    set_cached_sql_gen(query, sql)
+    
     is_safe = validate_sql(sql)
     return {"generated_sql": sql, "is_sql_safe": is_safe}
 
 def sql_execution_node(state: GraphState):
-    """Handles the database execution and formatting."""
+    """Handles the database execution and formatting with Tier 4 Caching."""
     print("\n🟢 [LangGraph Node] Entering SQL Execution...")
-    db_results = execute_sql(state["generated_sql"])
+    generated_sql = state["generated_sql"]
+    
+    cached_results = get_cached_sql_result(generated_sql)
+    if cached_results:
+        formatted_context = format_sql_results(cached_results)
+        return {"context_docs": formatted_context}
+        
+    db_results = execute_sql(generated_sql)
+    
+    set_cached_sql_result(generated_sql, db_results)
+    
     formatted_context = format_sql_results(db_results)
     return {"context_docs": formatted_context}
 
@@ -33,9 +58,17 @@ def blocked_sql_node(state: GraphState):
     return {"final_answer": "I cannot execute that query because it failed security validation."}
 
 def generate_answer_node(state: GraphState):
-    """Handles the purple LLM Answer Generation block."""
+    """Handles the purple LLM Answer Generation block with Tier 5 Caching."""
     print("\n🟣 [LangGraph Node] Entering LLM Answer Generation...")
-    answer = generate_final_answer(state["query"], state["context_docs"])
+    query = state["query"]
+    
+    cached_answer = get_cached_rag_answer(query)
+    if cached_answer:
+        return {"final_answer": cached_answer}
+    answer = generate_final_answer(query, state["context_docs"])
+    
+    set_cached_rag_answer(query, answer)
+    
     return {"final_answer": answer}
 
 def rag_retrieval_node(state: dict):
