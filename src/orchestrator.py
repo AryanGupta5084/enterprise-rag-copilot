@@ -1,9 +1,8 @@
 from typing import TypedDict, List, Dict, Any
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-
 from src.text2sql_pipeline import generate_sql, validate_sql, execute_sql, format_sql_results
-from src.rag_pipeline import generate_final_answer, crag_grader_and_fallback, self_rag_reflect
+from src.rag_pipeline import generate_final_answer, self_rag_reflect, search_qdrant, rerank_documents, generate_hyde_documents
 
 class GraphState(TypedDict):
     query: str
@@ -38,21 +37,25 @@ def generate_answer_node(state: GraphState):
     answer = generate_final_answer(state["query"], state["context_docs"])
     return {"final_answer": answer}
 
-def rag_retrieval_node(state: GraphState):
-    """Handles the blue RAG Pipeline block (Retrieval + CRAG)."""
-    print("\n🔵 [LangGraph Node] Entering RAG Retrieval...")
+def rag_retrieval_node(state: dict):
+    """
+    LangGraph Node: Executes the full Advanced RAG Retrieval Sequence.
+    """
+    query = state["query"]
+    print("\n🔵 [LangGraph Node] Entering Advanced RAG Retrieval...")
+    print("🧠 [RAG Pipeline] Generating HyDE documents...")
+    hyde_docs = generate_hyde_documents(query)
     
-    mock_retrieved_docs = [
-        {
-            "document": "Kubernetes pods can be restarted using kubectl delete pod.", 
-            "vector_score": 0.9, 
-            "rerank_score": 0.95
-        }
-    ]
+    search_queries = [query] + hyde_docs
+    print("🔍 [RAG Pipeline] Executing Hybrid Search and RRF (k=60) in Qdrant...")
+    raw_retrieved_docs = search_qdrant(search_queries)
+    print("⚖️ [RAG Pipeline] Reranking documents using Cross-Encoder...")
+    final_ranked_docs = rerank_documents(query, raw_retrieved_docs)
     
-    crag_results = crag_grader_and_fallback(state["query"], mock_retrieved_docs)
+    state["context_docs"] = final_ranked_docs
+    state["hyde_documents"] = hyde_docs
     
-    return {"context_docs": crag_results["documents"]}
+    return state
 
 def self_rag_node(state: GraphState):
     """Handles the purple Self-RAG reflection loop."""
