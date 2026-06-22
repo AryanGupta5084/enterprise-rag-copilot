@@ -1,7 +1,8 @@
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
-import sqlite3
+import psycopg2
+import psycopg2.extras
 
 DB_SCHEMA = """
 Table: pod_metrics
@@ -57,78 +58,48 @@ def validate_sql(sql_query: str) -> bool:
     print("✅ [Text2SQL] Query validation passed. Safe to execute.")
     return True
 
-def setup_mock_database():
-    """Creates a local SQLite database to simulate our PostgreSQL Kubernetes DB."""
-    conn = sqlite3.connect("kubernetes_mock.db")
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS pod_metrics (
-            pod_name TEXT,
-            namespace TEXT,
-            cpu_usage_cores REAL,
-            memory_usage_mb REAL,
-            status TEXT
-        )
-    ''')
-    
-    cursor.execute("SELECT COUNT(*) FROM pod_metrics")
-    if cursor.fetchone() == 0:
-        mock_data = [
-            ('nginx-ingress', 'kube-system', 0.5, 256.0, 'Running'),
-            ('frontend-webapp-1', 'production', 1.2, 1024.0, 'Running'),
-            ('backend-api-3', 'production', 0.8, 600.0, 'CrashLoopBackOff'),
-            ('redis-cache', 'database', 0.2, 150.0, 'Running'),
-            ('prometheus-server', 'monitoring', 2.0, 4096.0, 'Running')
-        ]
-        cursor.executemany('''
-            INSERT INTO pod_metrics (pod_name, namespace, cpu_usage_cores, memory_usage_mb, status)
-            VALUES (?, ?, ?, ?, ?)
-        ''', mock_data)
-        conn.commit()
-        
-    return conn
+DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres"
 
-def execute_sql(sql_query: str) -> dict:
+def execute_sql(sql_query: str) -> list[dict]:
     """
-    Execute SQL: Runs the validated SELECT query against the database.
+    Execute SQL: Runs the validated SELECT query against the PostgreSQL 16 database.
     """
-    print(f"\n🏃 [Text2SQL] Executing query...")
+    print("\n🐘 [Text2SQL] Executing query against PostgreSQL 16...")
+    
     try:
-        conn = setup_mock_database()
-        cursor = conn.cursor()
-        cursor.execute(sql_query)
+        conn = psycopg2.connect(DB_URI)
         
-        columns = [description for description in cursor.description]
-        rows = cursor.fetchall()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        cursor.execute(sql_query)
+        results = cursor.fetchall()
+        
+        conn.commit()
+        cursor.close()
         conn.close()
         
-        print(f"✅ [Text2SQL] Execution successful. Retrieved {len(rows)} rows.")
-        return {"columns": columns, "rows": rows}
+        print(f"✅ [Text2SQL] Successfully retrieved {len(results)} rows from Postgres.")
+        
+        return [dict(row) for row in results]
+        
     except Exception as e:
-        print(f"❌ [Text2SQL] Database execution failed: {e}")
-        return {"columns": [], "rows": [], "error": str(e)}
+        print(f"❌ [Text2SQL] PostgreSQL Execution Error: {e}")
+        return [{"error": str(e)}]
 
-def format_sql_results(db_results: dict) -> list[dict]:
+
+def format_sql_results(db_results: list[dict]) -> list[dict]:
     """
-    Format Results: Converts raw database rows into text context for the LLM.
-    We return it as a list of dictionaries to perfectly match what our LLM expects!
+    Format Results (rows -> context): 
+    Prepares the database rows to be passed securely into the LLM context.
     """
-    print("📝 [Text2SQL] Formatting rows into LLM context...")
+    if not db_results:
+        return [{"text": "No results found in the database."}]
     
     if "error" in db_results:
-        return [{"document": f"Database Error: {db_results['error']}"}]
+        return [{"text": f"Database error occurred: {db_results['error']}"}]
         
-    if not db_results["rows"]:
-        return [{"document": "The database query returned 0 results."}]
+    formatted_string = "Database Query Results:\n"
+    for i, row in enumerate(db_results):
+        formatted_string += f"Row {i+1}: {row}\n"
         
-    columns = db_results["columns"]
-    formatted_rows = []
-    
-    for row in db_results["rows"]:
-        row_dict = dict(zip(columns, row))
-        row_string = ", ".join([f"{k}: {v}" for k, v in row_dict.items()])
-        formatted_rows.append({"document": f"Database Record -> {row_string}"})
-        
-    print("✅ [Text2SQL] Successfully formatted database results.")
-    return formatted_rows
+    return [{"text": formatted_string}]

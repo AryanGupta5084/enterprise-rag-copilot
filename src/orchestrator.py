@@ -1,6 +1,7 @@
 from typing import TypedDict, List, Dict, Any
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg_pool import ConnectionPool
 from src.text2sql_pipeline import generate_sql, validate_sql, execute_sql, format_sql_results
 from src.rag_pipeline import generate_final_answer, self_rag_reflect, search_qdrant, rerank_documents, generate_hyde_documents
 from src.security import spotlight_context
@@ -139,8 +140,15 @@ workflow.add_edge("rag_retrieval", "generate_answer")
 workflow.add_edge("generate_answer", "self_rag")
 workflow.add_edge("self_rag", END)
 
-memory = MemorySaver()
-app_graph = workflow.compile(
-    checkpointer=memory,
-    interrupt_before=["execute_sql"] 
-)
+DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres"
+pool = ConnectionPool(conninfo=DB_URI, max_size=5)
+
+def get_compiled_graph():
+    """Returns the compiled LangGraph app with Postgres checkpointing."""
+    with pool.connection() as conn:
+        checkpointer = PostgresSaver(conn)
+        checkpointer.setup() 
+        
+    return workflow.compile(checkpointer=checkpointer)
+
+app = get_compiled_graph()
