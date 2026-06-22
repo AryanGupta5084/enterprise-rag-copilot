@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, HTTPException, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from src.router import route_user_query
 from src.rag_pipeline import generate_hyde_documents, crag_grader_and_fallback, generate_final_answer, self_rag_reflect
@@ -6,10 +6,13 @@ from src.vector_store import get_embedding_with_cache, search_qdrant, rerank_doc
 from src.text2sql_pipeline import generate_sql, validate_sql, execute_sql, format_sql_results
 from src.orchestrator import app_graph
 import uuid
-from src.security import SecureQueryRequest, truncate_input, scan_input_llm_guard, redact_pii
+from src.security import SecureQueryRequest, truncate_input, scan_input_llm_guard, redact_pii, verify_jwt_token, check_token_budget
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+import datetime
+from fastapi.security import OAuth2PasswordRequestForm
+import jwt
 
 class CopilotResponse(BaseModel):
     """
@@ -55,14 +58,47 @@ async def health_check():
         "redis_cache": "pending configuration"
     }
 
-@app.post("/ask")
+MOCK_USERS = {
+    "admin_user": "securepassword123",
+    "sre_engineer": "k8s_rocks!"
+}
+
+SECRET_KEY = "enterprise-rag-super-secret-key"
+
+@app.post("/login")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """
+    Authenticates a user and returns a signed JWT Bearer token.
+    """
+    username = form_data.username
+    password = form_data.password
+    
+    if username in MOCK_USERS and MOCK_USERS[username] == password:
+        expiration = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+        token_payload = {"sub": username, "exp": expiration}
+        
+        access_token = jwt.encode(token_payload, SECRET_KEY, algorithm="HS256")
+        
+        print(f"[Auth] Issued new JWT token for user: {username}")
+        return {"access_token": access_token, "token_type": "bearer"}
+    else:
+        print(f"[Auth] Failed login attempt for user: {username}")
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+@app.post("/ask", response_model=CopilotResponse)
 @limiter.limit("20/minute")
-async def ask_copilot(request: Request, payload: SecureQueryRequest):
+async def ask_copilot(request: Request, payload: SecureQueryRequest, user: str = Depends(verify_jwt_token)):
     """
     Accepts a user query, routes it via the Intent Router, 
     and caches the decision in Redis.
     """
     query_text = payload.query
+    try:
+        estimated_cost = len(query_text) // 4
+        check_token_budget(username=user, estimated_tokens=estimated_cost)
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=429, detail=str(e))
     query_text = truncate_input(query_text, max_tokens=1000)
     try:
         query_text = scan_input_llm_guard(query_text)
