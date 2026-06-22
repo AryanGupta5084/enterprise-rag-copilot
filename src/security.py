@@ -2,6 +2,11 @@ import re
 import tiktoken
 from pydantic import BaseModel, field_validator
 from llm_guard.input_scanners import PromptInjection, Toxicity
+import jwt
+from fastapi import HTTPException, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+DAILY_TOKEN_USAGE = {}
 
 class SecureQueryRequest(BaseModel):
     query: str
@@ -90,3 +95,45 @@ def redact_pii(text: str) -> str:
         print("✅ [Security L7a] No PII detected.")
         
     return sanitized_text
+
+token_bearer = HTTPBearer()
+SECRET_KEY = "enterprise-rag-super-secret-key"
+def verify_jwt_token(credentials: HTTPAuthorizationCredentials = Security(token_bearer)) -> str:
+    """
+    L4a Guardrail: JWT Auth (PyJWT).
+    Validates the Bearer token to ensure the user is authorized.
+    """
+    print(f"\n🛡️ [Security L4a] Validating JWT Authentication token...")
+    
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=["HS256"])
+        username = payload.get("sub", "Unknown User")
+        print(f"✅ [Security L4a] User '{username}' authenticated successfully.")
+        return username
+        
+    except jwt.ExpiredSignatureError:
+        print("🚨 [Security L4a] AUTH BLOCKED: JWT Token Expired.")
+        raise HTTPException(status_code=401, detail="Security Violation: Token has expired")
+        
+    except jwt.InvalidTokenError:
+        print("🚨 [Security L4a] AUTH BLOCKED: Invalid JWT Token.")
+        raise HTTPException(status_code=401, detail="Security Violation: Invalid or malformed token")
+    
+def check_token_budget(username: str, estimated_tokens: int) -> None:
+    """
+    L6 Guardrail: Token Budget (100k / day / user).
+    Ensures the authenticated user has not exceeded their daily allowance.
+    """
+    print(f"\n🛡️ [Security L6] Checking daily token budget for '{username}'...")
+    
+    if username not in DAILY_TOKEN_USAGE:
+        DAILY_TOKEN_USAGE[username] = 0
+        
+    current_usage = DAILY_TOKEN_USAGE[username]
+    
+    if current_usage + estimated_tokens > 100000:
+        print(f"🚨 [Security L6] BUDGET EXCEEDED: '{username}' attempted to use {current_usage + estimated_tokens}/100000 tokens.")
+        raise ValueError("Security Violation: Daily token budget of 100,000 tokens exceeded. Please try again tomorrow.")
+        
+    DAILY_TOKEN_USAGE[username] += estimated_tokens
+    print(f"✅ [Security L6] Budget OK. '{username}' has consumed {DAILY_TOKEN_USAGE[username]}/100000 tokens today.")
