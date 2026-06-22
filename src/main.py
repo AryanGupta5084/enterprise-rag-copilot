@@ -108,7 +108,6 @@ async def ask_copilot(request: Request, payload: SecureQueryRequest):
     print("\n🛡️ [Security L7b] Scanning generated LLM response for PII leaks...")
     safe_final_answer = redact_pii(raw_final_answer)
     
-    # Populate the final successful response ensuring it matches the L9 schema
     response_data["status"] = "Executed via Unified LangGraph State Machine"
     response_data["generated_sql"] = final_state.get("generated_sql", "")
     response_data["final_answer"] = safe_final_answer
