@@ -5,11 +5,26 @@ import psycopg2
 import psycopg2.extras
 
 DB_SCHEMA = """
-Table: pod_metrics
-Columns: pod_name (VARCHAR), namespace (VARCHAR), cpu_usage_cores (FLOAT), memory_usage_mb (FLOAT), status (VARCHAR)
+Table: clusters
+Columns: cluster_id (INT), name (VARCHAR), region (VARCHAR), status (VARCHAR)
 
-Table: cluster_incidents
-Columns: incident_id (INT), description (VARCHAR), severity (VARCHAR), resolved (BOOLEAN)
+Table: nodes
+Columns: node_id (INT), cluster_id (INT), name (VARCHAR), instance_type (VARCHAR), status (VARCHAR)
+
+Table: pods
+Columns: pod_id (INT), namespace (VARCHAR), name (VARCHAR), status (VARCHAR), restart_count (INT)
+
+Table: services
+Columns: service_id (INT), namespace (VARCHAR), name (VARCHAR), type (VARCHAR), cluster_ip (VARCHAR)
+
+Table: deployments
+Columns: deployment_id (INT), namespace (VARCHAR), name (VARCHAR), replicas (INT), available_replicas (INT)
+
+Table: incidents
+Columns: incident_id (INT), description (TEXT), severity (VARCHAR), status (VARCHAR), created_at (TIMESTAMP)
+
+Table: alerts
+Columns: alert_id (INT), alert_name (VARCHAR), component (VARCHAR), is_active (BOOLEAN)
 """
 
 def generate_sql(query: str) -> str:
