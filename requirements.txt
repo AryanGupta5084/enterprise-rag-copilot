@@ -20,3 +20,5 @@ requests
 PyJWT
 llm-guard
 fastembed
+boto3
+pypdf
