@@ -161,11 +161,14 @@ DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres"
 pool = ConnectionPool(conninfo=DB_URI, max_size=5)
 
 def get_compiled_graph():
-    """Returns the compiled LangGraph app with Postgres checkpointing."""
+    """Returns the compiled LangGraph app with Postgres checkpointing and HITL interrupt."""
     with pool.connection() as conn:
         checkpointer = PostgresSaver(conn)
         checkpointer.setup() 
         
-    return workflow.compile(checkpointer=checkpointer)
+    return workflow.compile(
+        checkpointer=checkpointer,
+        interrupt_before=["sql_execution_node"]
+    )
 
 app = get_compiled_graph()
