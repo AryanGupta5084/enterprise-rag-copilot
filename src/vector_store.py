@@ -3,9 +3,10 @@ import json
 import os
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, SparseVectorParams
+from qdrant_client.models import Distance, VectorParams, SparseVectorParams, SparseVector
 from langchain_huggingface import HuggingFaceEmbeddings
 from sentence_transformers import CrossEncoder
+from fastembed import SparseTextEmbedding
 
 load_dotenv()
 
@@ -19,7 +20,7 @@ redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=T
 
 try:
     embedding_model = HuggingFaceEmbeddings(model_name="BAAI/bge-base-en-v1.5")
-    print("✅ High-Performance BGE Embedding model loaded.")
+    print("✅ High-Performance BGE Dense Embedding model loaded.")
 except Exception as e:
     print(f"❌ Failed to load HuggingFace Embeddings. Error: {e}")
 
@@ -28,6 +29,12 @@ try:
     print("✅ High-Performance BGE Cross-Encoder Reranker loaded.")
 except Exception as e:
     print(f"❌ Failed to load BGE Reranker. Error: {e}")
+
+try:
+    sparse_embedding_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+    print("✅ High-Performance BM25 Sparse Embedding model loaded.")
+except Exception as e:
+    print(f"❌ Failed to load BM25 Sparse Embeddings. Error: {e}")
 
 EMBEDDING_CACHE_TTL = 7 * 24 * 60 * 60
 
@@ -63,6 +70,12 @@ def init_qdrant_collection():
 
 init_qdrant_collection()
 
+def get_sparse_embedding(text: str):
+    """Generates a real BM25 sparse vector (indices and values) for exact keyword matching."""
+    sparse_result = list(sparse_embedding_model.embed([text]))
+    return sparse_result
+
+
 def calculate_rrf(dense_ranked_docs: list[dict], sparse_ranked_docs: list[dict], k: int = 60) -> list[dict]:
     """
     Reciprocal Rank Fusion (RRF) with k=60.
@@ -73,7 +86,7 @@ def calculate_rrf(dense_ranked_docs: list[dict], sparse_ranked_docs: list[dict],
     doc_store = {}
 
     for rank, doc in enumerate(dense_ranked_docs):
-        doc_id = doc.get("id", doc["text"])
+        doc_id = doc.get("id", doc["text"]) 
         doc_store[doc_id] = doc
         rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (k + rank + 1))
         
@@ -83,17 +96,17 @@ def calculate_rrf(dense_ranked_docs: list[dict], sparse_ranked_docs: list[dict],
             doc_store[doc_id] = doc
         rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (k + rank + 1))
         
-    sorted_fused_docs = sorted(rrf_scores.items(), key=lambda item: item[3], reverse=True)
+    sorted_fused_docs = sorted(rrf_scores.items(), key=lambda item: item[4], reverse=True)
     
     return [doc_store[doc_id] for doc_id, score in sorted_fused_docs]
 
 
 def search_qdrant(queries: list[str], limit: int = 3) -> list[dict]:
     """
-    Executes Hybrid Retrieval (Dense + Sparse/BM25) across Qdrant for multiple queries.
+    Executes TRUE Hybrid Retrieval (Dense + Sparse/BM25) across Qdrant for multiple queries.
     Merges results using Reciprocal Rank Fusion (RRF).
     """
-    print(f"\n🔍 [RAG Pipeline] Executing Hybrid Retrieval (Dense + Sparse/BM25) for {len(queries)} queries...")
+    print(f"\n🔍 [RAG Pipeline] Executing True Hybrid Retrieval (Dense + Sparse/BM25) for {len(queries)} queries...")
     all_fused_results = {}
     
     for query in queries:
@@ -109,7 +122,21 @@ def search_qdrant(queries: list[str], limit: int = 3) -> list[dict]:
             for hit in dense_response.points
         ]
         
-        sparse_results = dense_results.copy() 
+        sparse_vector = get_sparse_embedding(query)
+        sparse_response = qdrant.query_points(
+            collection_name=COLLECTION_NAME,
+            query=SparseVector(
+                indices=sparse_vector.indices.tolist(),
+                values=sparse_vector.values.tolist()
+            ),
+            using="bm25",
+            limit=limit
+        )
+        
+        sparse_results = [
+            {"id": hit.id, "text": hit.payload["text"], "sparse_score": hit.score}
+            for hit in sparse_response.points
+        ]
         
         fused_docs = calculate_rrf(dense_results, sparse_results, k=60)
         
@@ -118,7 +145,7 @@ def search_qdrant(queries: list[str], limit: int = 3) -> list[dict]:
             all_fused_results[doc_id] = doc
             
     final_docs = list(all_fused_results.values())
-    print(f"✅ Retrieved and fused {len(final_docs)} unique documents using RRF.")
+    print(f"✅ Retrieved and fused {len(final_docs)} unique documents using real BM25 and RRF.")
     return final_docs
 
 def rerank_documents(query: str, retrieved_docs: list[dict]) -> list[dict]:
