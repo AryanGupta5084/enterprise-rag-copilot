@@ -1,4 +1,5 @@
-from typing import TypedDict, List, Dict, Any
+from typing import TypedDict, List, Dict, Any, Annotated
+import operator
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg_pool import ConnectionPool
@@ -14,7 +15,7 @@ from src.cache import (
 class GraphState(TypedDict):
     query: str
     destination: str
-    context_docs: List[Dict]
+    context_docs: Annotated[list, operator.add] 
     generated_sql: str
     is_sql_safe: bool
     final_answer: str
@@ -72,10 +73,8 @@ def generate_answer_node(state: GraphState):
     
     return {"final_answer": answer}
 
-def rag_retrieval_node(state: dict):
-    """
-    LangGraph Node: Executes the full Advanced RAG Retrieval Sequence.
-    """
+def rag_retrieval_node(state: GraphState):
+    """LangGraph Node: Executes the full Advanced RAG Retrieval Sequence."""
     query = state["query"]
     print("\n🔵 [LangGraph Node] Entering Advanced RAG Retrieval...")
     print("🧠 [RAG Pipeline] Generating HyDE documents...")
@@ -88,25 +87,32 @@ def rag_retrieval_node(state: dict):
     final_ranked_docs = rerank_documents(query, raw_retrieved_docs)
 
     safe_xml_context = spotlight_context(final_ranked_docs)
-    state["context_docs"] = safe_xml_context
-    state["hyde_documents"] = hyde_docs 
     
-    return state
+    return {"context_docs": [safe_xml_context], "hyde_documents": hyde_docs}
 
 def self_rag_node(state: GraphState):
     """Handles the purple Self-RAG reflection loop."""
     print("\n🟣 [LangGraph Node] Entering Self-RAG Reflection...")
-    
     final_evaluated_answer = self_rag_reflect(state["query"], state["context_docs"], state["final_answer"])
-    
     return {"final_answer": final_evaluated_answer}
 
+def intent_router_node(state: GraphState):
+    """Entry node that triggers the LLM intent router."""
+    from src.router import route_user_query
+    intent = route_user_query(state["query"])
+    return {"destination": intent}
+
 def route_intent(state: GraphState):
-    """The Intent Router: Decides whether to go down the RAG or SQL path."""
-    print(f"\n🔀 [LangGraph Router] Routing query down the '{state['destination']}' pipeline...")
-    if state["destination"] == "sql":
-        return "sql"
-    return "rag"
+    """The Intent Router: Fan-out conditionally to RAG, SQL, or Both (Hybrid)."""
+    intent = state.get("destination", "rag")
+    print(f"\n🔀 [LangGraph Router] Routing query down the '{intent.upper()}' pipeline...")
+    
+    if intent == "hybrid":
+        return ["rag_retrieval_node", "sql_generation_node"]
+    elif intent == "sql":
+        return ["sql_generation_node"]
+    else:
+        return ["rag_retrieval_node"]
 
 def route_sql_safety(state: GraphState):
     """Routes the graph based on whether the SQL passed the blocklist."""
@@ -116,29 +122,40 @@ def route_sql_safety(state: GraphState):
 
 workflow = StateGraph(GraphState)
 
-workflow.add_node("generate_sql", sql_generation_node)
-workflow.add_node("execute_sql", sql_execution_node)
-workflow.add_node("blocked_sql", blocked_sql_node)
-workflow.add_node("rag_retrieval", rag_retrieval_node)
-workflow.add_node("generate_answer", generate_answer_node)
-workflow.add_node("self_rag", self_rag_node)
+workflow.add_node("intent_router_node", intent_router_node)
+workflow.add_node("sql_generation_node", sql_generation_node)
+workflow.add_node("sql_execution_node", sql_execution_node)
+workflow.add_node("blocked_sql_node", blocked_sql_node)
+workflow.add_node("rag_retrieval_node", rag_retrieval_node)
+workflow.add_node("generate_answer_node", generate_answer_node)
+workflow.add_node("self_rag_node", self_rag_node)
 
-workflow.set_conditional_entry_point(
+workflow.set_entry_point("intent_router_node")
+
+workflow.add_conditional_edges(
+    "intent_router_node",
     route_intent,
     {
-        "sql": "generate_sql",
-        "rag": "rag_retrieval"
+        "rag_retrieval_node": "rag_retrieval_node",
+        "sql_generation_node": "sql_generation_node"
     }
 )
 
-workflow.add_conditional_edges("generate_sql", route_sql_safety, {"execute": "execute_sql", "blocked": "blocked_sql"})
-workflow.add_edge("execute_sql", "generate_answer")
-workflow.add_edge("blocked_sql", END)
+workflow.add_conditional_edges(
+    "sql_generation_node",
+    route_sql_safety,
+    {
+        "execute": "sql_execution_node",
+        "blocked": "blocked_sql_node"
+    }
+)
 
-workflow.add_edge("rag_retrieval", "generate_answer")
+workflow.add_edge("rag_retrieval_node", "generate_answer_node")
+workflow.add_edge("sql_execution_node", "generate_answer_node")
+workflow.add_edge("blocked_sql_node", "generate_answer_node")
 
-workflow.add_edge("generate_answer", "self_rag")
-workflow.add_edge("self_rag", END)
+workflow.add_edge("generate_answer_node", "self_rag_node")
+workflow.add_edge("self_rag_node", END)
 
 DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres"
 pool = ConnectionPool(conninfo=DB_URI, max_size=5)

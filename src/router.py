@@ -1,4 +1,7 @@
 import redis
+from langchain_core.prompts import PromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.output_parsers import StrOutputParser
 
 try:
     redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
@@ -8,25 +11,46 @@ except Exception as e:
 
 def route_user_query(user_query: str) -> str:
     """
-    Acts as the entry point for our LangGraph State Machine.
-    Decides if the query goes to the 'RAG' or 'Text2SQL' pipeline.
+    Intent Router: Dynamically routes the query to 'rag', 'sql', or 'hybrid'
+    based on semantic intent, wrapped in a 24-hour Redis cache.
     """
     cache_key = f"intent:{user_query.lower().strip()}"
     
     cached_intent = redis_client.get(cache_key)
     if cached_intent:
-        print("🔥 Cache hit! Returning the intent directly from Redis.")
+        print(f"🔥 [Intent Router] Cache hit! Returning intent '{cached_intent.upper()}' directly from Redis.")
         return cached_intent
 
-    print("🥶 Cache miss. Analyzing intent...")
+    print("🥶 [Intent Router] Cache miss. Analyzing semantic intent with LLM...")
     
-    sql_keywords = ["database", "table", "count", "sql", "rows", "select", "how many"]
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
     
-    if any(keyword in user_query.lower() for keyword in sql_keywords):
-        intent = "sql"
-    else:
+    prompt = PromptTemplate.from_template(
+        "You are an expert intent router for an Enterprise Kubernetes SRE Copilot.\n"
+        "Classify the user's query into one of three distinct routing paths:\n\n"
+        "1. 'sql' - If the query asks for structured live metrics, counts, database rows, or specific incident status.\n"
+        "2. 'rag' - If the query asks for documentation, troubleshooting steps, logs, or conceptual explanations.\n"
+        "3. 'hybrid' - If the query requires BOTH live database metrics AND conceptual troubleshooting documentation.\n\n"
+        "Return ONLY the exact word: 'rag', 'sql', or 'hybrid'. Do not return any other text.\n\n"
+        "Query: {query}\n"
+        "Route:"
+    )
+    
+    chain = prompt | llm | StrOutputParser()
+    
+    try:
+        intent = chain.invoke({"query": user_query}).strip().lower()
+        
+        if intent not in ["rag", "sql", "hybrid"]:
+            print(f"⚠️ [Intent Router] Unrecognized output '{intent}', defaulting to 'rag'.")
+            intent = "rag" 
+            
+    except Exception as e:
+        print(f"❌ [Intent Router] Routing failed, defaulting to 'rag'. Error: {e}")
         intent = "rag"
         
+    print(f"✅ [Intent Router] Query intelligently routed to: {intent.upper()}")
+    
     redis_client.setex(cache_key, INTENT_CACHE_TTL, intent)
     
     return intent

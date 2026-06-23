@@ -19,3 +19,4 @@ streamlit
 requests
 PyJWT
 llm-guard
+fastembed
