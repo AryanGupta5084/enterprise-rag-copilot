@@ -24,13 +24,6 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
-  # 3. Redis (For 5-Tier Caching)
-  redis:
-    image: redis:latest
-    container_name: rag_redis
-    ports:
-      - "6379:6379"
-
 volumes:
   postgres_data:
   qdrant_data:

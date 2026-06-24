@@ -1,13 +1,24 @@
+import os
 import redis
+from dotenv import load_dotenv
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
 
+load_dotenv()
+
 try:
-    redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-    INTENT_CACHE_TTL = 86400
+    # ☁️ Connecting to Upstash Serverless Redis (Aligns with Enterprise Diagram)
+    redis_client = redis.Redis(
+        host=os.getenv("UPSTASH_REDIS_HOST"),
+        port=int(os.getenv("UPSTASH_REDIS_PORT", 6379)),
+        password=os.getenv("UPSTASH_REDIS_PASSWORD"),
+        ssl=True, # Required for Upstash Serverless
+        decode_responses=True
+    )
+    INTENT_CACHE_TTL = 86400 # 24 hours (Matches Tier 2 Cache in Architecture)
 except Exception as e:
-    print(f"Failed to connect to Redis: {e}")
+    print(f"❌ Failed to connect to Upstash Redis: {e}")
 
 def route_user_query(user_query: str) -> str:
     """
@@ -18,7 +29,7 @@ def route_user_query(user_query: str) -> str:
     
     cached_intent = redis_client.get(cache_key)
     if cached_intent:
-        print(f"🔥 [Intent Router] Cache hit! Returning intent '{cached_intent.upper()}' directly from Redis.")
+        print(f"🔥 [Intent Router] Cache hit! Returning intent '{cached_intent.upper()}' directly from Upstash Redis.")
         return cached_intent
 
     print("🥶 [Intent Router] Cache miss. Analyzing semantic intent with LLM...")
