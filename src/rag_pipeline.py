@@ -51,10 +51,10 @@ def generate_hyde_documents(user_query: str) -> list[str]:
 
 def generate_final_answer(query: str, context_docs: list) -> str:
     """
-    LLM Answer Generation strictly bound by the L9 Pydantic Guardrail,
-    now featuring explicit retry logic on schema failure.
+    LLM Answer Generation: Generates the raw string answer.
+    (L9 Schema validation has been moved to the API Gateway level).
     """
-    print("\n🟣 [RAG Pipeline] Generating Final Answer with L9 Schema Validation & Retry Logic...")
+    print("\n🟣 [RAG Pipeline] Generating raw final answer...")
     
     if context_docs and isinstance(context_docs, dict):
         context_text = "\n\n".join([str(doc.get("text", doc.get("document", doc))) for doc in context_docs])
@@ -62,7 +62,6 @@ def generate_final_answer(query: str, context_docs: list) -> str:
         context_text = "\n\n".join([str(doc) for doc in context_docs])
         
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
-    structured_llm = llm.with_structured_output(CopilotResponse)
     
     prompt = PromptTemplate.from_template(
         "You are an expert Kubernetes SRE Assistant. Answer the user's query strictly using the provided Context.\n"
@@ -71,24 +70,13 @@ def generate_final_answer(query: str, context_docs: list) -> str:
         "Query: {query}\n"
     )
     
-    chain = prompt | structured_llm
+    chain = prompt | llm | StrOutputParser()
     
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response_obj = chain.invoke({"context": context_text, "query": query})
-            
-            print(f"✅ [L9 Guardrail] Output successfully validated on attempt {attempt + 1}. Confidence: {response_obj.confidence_score}")
-            return response_obj.answer
-            
-        except Exception as e:
-            print(f"⚠️ [L9 Guardrail] Schema validation failed (Attempt {attempt + 1}/{max_retries}). Error: {e}")
-            
-            if attempt == max_retries - 1:
-                print("❌ [L9 Guardrail] Max retries reached. Triggering safe fallback.")
-                return "I apologize, but I encountered an internal formatting error while synthesizing the data. Please try again."
-                
-            print("🔄 [L9 Guardrail] Retrying LLM generation to correct formatting...")
+    try:
+        return chain.invoke({"context": context_text, "query": query})
+    except Exception as e:
+        print(f"❌ [RAG Pipeline] Answer generation failed: {e}")
+        return "I apologize, but I encountered an error while synthesizing the data."
 
 def perform_tavily_fallback(query: str) -> list:
     """Helper function to execute the Tavily Web Search."""
