@@ -22,6 +22,7 @@ class GraphState(TypedDict):
     final_answer: str
     self_rag_score: float
     generation_attempts: int
+    metadata: Dict[str, Any]
 
 def sql_generation_node(state: GraphState):
     print("\n🟢 [LangGraph Node] Entering SQL Generation...")
@@ -65,6 +66,21 @@ def rag_retrieval_node(state: GraphState):
     safe_xml_context = spotlight_context(crag_verified_docs)
     
     return {"context_docs": [safe_xml_context]}
+
+def finalize_node(state: GraphState):
+    print("\n🏁 [LangGraph Node] Entering Finalize - Attaching Metadata...")
+    
+    metadata = {
+        "routing_destination": state.get("destination", "unknown"),
+        "generation_attempts": state.get("generation_attempts", 1),
+        "self_rag_score": state.get("self_rag_score", 1.0),
+        "sql_executed": bool(state.get("generated_sql")),
+        "sql_safe": state.get("is_sql_safe", True),
+        "status": "completed"
+    }
+    
+    print(f"✅ [Finalize] Attached metadata: {metadata}")
+    return {"metadata": metadata}
 
 def generate_answer_node(state: GraphState):
     print("\n🟣 [LangGraph Node] Entering LLM Answer Generation...")
@@ -116,7 +132,7 @@ def route_self_rag(state: GraphState):
         
     print(f"✅ [LangGraph Edge] Final answer accepted (Score: {score:.2f}).")
     set_cached_rag_answer(state["query"], state["final_answer"])
-    return END
+    return "finalize_node"
 
 workflow = StateGraph(GraphState)
 
@@ -127,6 +143,7 @@ workflow.add_node("blocked_sql_node", blocked_sql_node)
 workflow.add_node("rag_retrieval_node", rag_retrieval_node)
 workflow.add_node("generate_answer_node", generate_answer_node)
 workflow.add_node("self_rag_node", self_rag_node)
+workflow.add_node("finalize_node", finalize_node)
 
 workflow.set_entry_point("intent_router_node")
 
@@ -144,16 +161,16 @@ workflow.add_conditional_edges(
 
 workflow.add_edge("rag_retrieval_node", "generate_answer_node")
 workflow.add_edge("sql_execution_node", "generate_answer_node")
-workflow.add_edge("blocked_sql_node", "generate_answer_node")
+workflow.add_edge("blocked_sql_node", "finalize_node")
 
 workflow.add_edge("generate_answer_node", "self_rag_node")
 
 workflow.add_conditional_edges(
     "self_rag_node",
     route_self_rag,
-    {"generate_answer_node": "generate_answer_node", END: END}
+    {"generate_answer_node": "generate_answer_node", "finalize_node": "finalize_node"}
 )
-
+workflow.add_edge("finalize_node", END)
 DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres"
 pool = ConnectionPool(conninfo=DB_URI, max_size=5)
 
