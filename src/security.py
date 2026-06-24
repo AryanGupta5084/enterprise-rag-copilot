@@ -156,3 +156,29 @@ def spotlight_context(retrieved_docs: list[dict]) -> str:
     
     print("✅ [Security L8] Context successfully wrapped in XML tags.")
     return xml_context
+
+def post_process_output(text: str) -> str:
+    """
+    L7b Guardrail: Output Moderation & PII Redaction.
+    Scans the LLM's generated output before sending it back to the user to ensure 
+    no sensitive internal data, credentials, or PII are leaked.
+    """
+    print("\n🛡️ [L7b Guardrail] Running Output Moderation and PII Redaction...")
+    
+    if not text:
+        return text
+
+    banned_words = ["super_secret_admin_password", "master_db_credentials"]
+    for word in banned_words:
+        if word in text.lower():
+            print("⚠️ [L7b Guardrail] Blocked sensitive internal keyword.")
+            text = text.replace(word, "[REDACTED_INTERNAL_DATA]")
+
+    text = re.sub(r'\bAKIA[0-9A-Z]{16}\b', '[AWS_KEY_REDACTED]', text)
+    
+    text = re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '[EMAIL_REDACTED]', text)
+    
+    text = re.sub(r'\b\d{3}-\d{2}-\d{4}\b', '[SSN_REDACTED]', text)
+
+    print("✅ [L7b Guardrail] Output successfully sanitized.")
+    return text

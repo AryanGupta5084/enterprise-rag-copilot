@@ -154,26 +154,36 @@ class ApprovalRequest(BaseModel):
     thread_id: str
     is_approved: bool
 
-@app.post("/approve")
-async def approve_sql_execution(request: ApprovalRequest):
+@app.post("/approve", response_model=CopilotResponse)
+async def approve_sql(request: Request, token: dict = Depends(verify_jwt_token)):
     """
-    HITL Endpoint: Allows a human to approve or reject a paused Text2SQL query.
+    HITL Endpoint: Resumes the LangGraph state machine after a human 
+    has reviewed and approved the pending SQL query.
     """
-    config = {"configurable": {"thread_id": request.thread_id}}
-    state_snapshot = app_graph.get_state(config)
+    username = token.get("sub", "unknown_user")
+    config = {"configurable": {"thread_id": username}}
     
-    if not state_snapshot.next or "execute_sql" not in state_snapshot.next:
-        return {"status": "Error", "message": "No pending execution found for this thread."}
+    state_snapshot = app_graph.get_state(config)
+    if not state_snapshot.next or "sql_execution_node" not in state_snapshot.next:
+        raise HTTPException(status_code=400, detail="No pending SQL queries awaiting approval for this user.")
         
-    if request.is_approved:
-        print("\n✅ [HITL] Human Approved! Resuming execution...")
-        final_state = app_graph.invoke(None, config=config)
+    print(f"👍 [HITL] Admin '{username}' approved SQL execution. Resuming LangGraph...")
+    
+    try:
+        result = app_graph.invoke(None, config=config)
         
-        return {
-            "status": "Executed Successfully",
-            "database_records": final_state.get("context_docs", []),
-            "final_answer": final_state.get("final_answer", "")
-        }
-    else:
-        print("\n❌ [HITL] Human Rejected. Aborting.")
-        return {"status": "Rejected", "final_answer": "The database query was rejected by an administrator."}
+        # L7b Output Moderation
+        safe_answer = post_process_output(result.get("final_answer", ""))
+        
+        return CopilotResponse(
+            query=result.get("query", ""),
+            routed_to=result.get("destination", "sql"),
+            message="SQL execution approved and completed.",
+            status="success",
+            generated_sql=result.get("generated_sql", ""),
+            final_answer=safe_answer
+        )
+        
+    except Exception as e:
+        print(f"❌ [API] Error resuming graph: {e}")
+        raise HTTPException(status_code=500, detail="Failed to execute approved SQL.")
