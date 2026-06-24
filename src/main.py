@@ -6,7 +6,7 @@ from src.vector_store import get_embedding_with_cache, search_qdrant, rerank_doc
 from src.text2sql_pipeline import generate_sql, validate_sql, execute_sql, format_sql_results
 from src.orchestrator import app_graph
 import uuid
-from src.security import SecureQueryRequest, truncate_input, scan_input_llm_guard, redact_pii, verify_jwt_token, check_token_budget
+from src.security import SecureQueryRequest, truncate_input, scan_input_llm_guard, post_process_output, redact_pii, verify_jwt_token, check_token_budget
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
