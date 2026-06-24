@@ -50,7 +50,8 @@ def sql_execution_node(state: GraphState):
 
 def blocked_sql_node(state: GraphState):
     print("\n🔴 [LangGraph Node] SQL Blocked by Guardrails!")
-    return {"final_answer": "I cannot execute that query because it failed security validation."}
+    # REWRITE: Append to context docs instead of abruptly setting final_answer
+    return {"context_docs": [{"text": "[SECURITY GUARDRAIL] SQL execution was blocked due to dangerous keywords."}]}
 
 def rag_retrieval_node(state: GraphState):
     print("\n🔵 [LangGraph Node] Entering Advanced RAG Retrieval...")
@@ -67,9 +68,12 @@ def rag_retrieval_node(state: GraphState):
     
     return {"context_docs": [safe_xml_context]}
 
+def rag_sync_node(state: GraphState):
+    print("\n⏳ [LangGraph Node] Hybrid Sync - Waiting for parallel Text2SQL pipeline...")
+    return {}
+
 def finalize_node(state: GraphState):
     print("\n🏁 [LangGraph Node] Entering Finalize - Attaching Metadata...")
-    
     metadata = {
         "routing_destination": state.get("destination", "unknown"),
         "generation_attempts": state.get("generation_attempts", 1),
@@ -78,13 +82,10 @@ def finalize_node(state: GraphState):
         "sql_safe": state.get("is_sql_safe", True),
         "status": "completed"
     }
-    
-    print(f"✅ [Finalize] Attached metadata: {metadata}")
     return {"metadata": metadata}
 
 def generate_answer_node(state: GraphState):
     print("\n🟣 [LangGraph Node] Entering LLM Answer Generation...")
-    
     current_attempts = state.get("generation_attempts", 0) + 1
     
     if current_attempts == 1:
@@ -97,9 +98,7 @@ def generate_answer_node(state: GraphState):
 
 def self_rag_node(state: GraphState):
     print("\n🟣 [LangGraph Node] Entering Self-RAG Reflection...")
-    
     score, evaluated_answer = self_rag_reflect(state["query"], state["context_docs"], state["final_answer"])
-    
     return {"final_answer": evaluated_answer, "self_rag_score": score}
 
 def intent_router_node(state: GraphState):
@@ -108,7 +107,6 @@ def intent_router_node(state: GraphState):
     return {"destination": intent}
 
 def route_intent(state: GraphState):
-    """Fans out to RAG, SQL, or Parallel Hybrid execution."""
     intent = state.get("destination", "rag")
     if intent == "hybrid":
         return ["rag_retrieval_node", "sql_generation_node"]
@@ -121,15 +119,17 @@ def route_sql_safety(state: GraphState):
         return "execute"
     return "blocked"
 
+def route_after_rag(state: GraphState):
+    if state.get("destination") == "hybrid":
+        return "sync"
+    return "generate"
+
 def route_self_rag(state: GraphState):
-    """Graph-native loop tracking attempts and scores."""
     score = state.get("self_rag_score", 1.0)
     attempts = state.get("generation_attempts", 1)
-    
     if score < 0.8 and attempts <= 2:
         print(f"🔄 [LangGraph Edge] Self-RAG Score {score:.2f} < 0.8. Rerouting (Attempt {attempts}/2)...")
         return "generate_answer_node"
-        
     print(f"✅ [LangGraph Edge] Final answer accepted (Score: {score:.2f}).")
     set_cached_rag_answer(state["query"], state["final_answer"])
     return "finalize_node"
@@ -141,6 +141,7 @@ workflow.add_node("sql_generation_node", sql_generation_node)
 workflow.add_node("sql_execution_node", sql_execution_node)
 workflow.add_node("blocked_sql_node", blocked_sql_node)
 workflow.add_node("rag_retrieval_node", rag_retrieval_node)
+workflow.add_node("rag_sync_node", rag_sync_node) # NEW
 workflow.add_node("generate_answer_node", generate_answer_node)
 workflow.add_node("self_rag_node", self_rag_node)
 workflow.add_node("finalize_node", finalize_node)
@@ -159,10 +160,15 @@ workflow.add_conditional_edges(
     {"execute": "sql_execution_node", "blocked": "blocked_sql_node"}
 )
 
-workflow.add_edge("rag_retrieval_node", "generate_answer_node")
-workflow.add_edge("sql_execution_node", "generate_answer_node")
-workflow.add_edge("blocked_sql_node", "finalize_node")
+workflow.add_conditional_edges(
+    "rag_retrieval_node",
+    route_after_rag,
+    {"sync": "rag_sync_node", "generate": "generate_answer_node"}
+)
 
+workflow.add_edge("rag_sync_node", "generate_answer_node")
+workflow.add_edge("sql_execution_node", "generate_answer_node")
+workflow.add_edge("blocked_sql_node", "generate_answer_node") 
 workflow.add_edge("generate_answer_node", "self_rag_node")
 
 workflow.add_conditional_edges(
@@ -171,11 +177,11 @@ workflow.add_conditional_edges(
     {"generate_answer_node": "generate_answer_node", "finalize_node": "finalize_node"}
 )
 workflow.add_edge("finalize_node", END)
+
 DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres"
 pool = ConnectionPool(conninfo=DB_URI, max_size=5)
 
 def get_compiled_graph():
-    """Returns the graph with Checkpointing and HITL Interrupt."""
     with pool.connection() as conn:
         checkpointer = PostgresSaver(conn)
         checkpointer.setup() 
@@ -185,4 +191,4 @@ def get_compiled_graph():
         interrupt_before=["sql_execution_node"]
     )
 
-app = get_compiled_graph()
+app_graph = get_compiled_graph()
