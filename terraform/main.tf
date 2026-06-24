@@ -41,7 +41,7 @@ resource "aws_ecs_task_definition" "rag_task" {
 
   container_definitions = jsonencode([
     {
-      name      = "rag-copilot-container"
+      name      = "rag-copilot-api"
       image     = "your-aws-account-id.dkr.ecr.us-east-1.amazonaws.com/rag-copilot:latest"
       essential = true
       portMappings = [
@@ -52,18 +52,15 @@ resource "aws_ecs_task_definition" "rag_task" {
         }
       ]
       environment = [
-        # Dynamically inject the newly provisioned RDS Postgres Endpoint
         { 
           name  = "DB_URI", 
           value = "postgresql://postgres:${var.db_password}@${aws_db_instance.postgres_checkpointer.endpoint}/postgres" 
         },
-        # Point to the dynamically created S3 Bucket
         {
           name  = "S3_CORPUS_BUCKET",
           value = aws_s3_bucket.raw_corpus_bucket.id
         }
       ]
-      # Pull sensitive API keys directly from AWS Secrets Manager
       secrets = [
         { name = "TAVILY_API_KEY", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:TAVILY_API_KEY::" },
         { name = "UPSTASH_REDIS_HOST", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:UPSTASH_REDIS_HOST::" },
@@ -72,6 +69,21 @@ resource "aws_ecs_task_definition" "rag_task" {
         { name = "QDRANT_API_KEY", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:QDRANT_API_KEY::" },
         { name = "GOOGLE_API_KEY", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:GOOGLE_API_KEY::" }
       ]
+    },
+    
+    {
+      name      = "rag-copilot-ui"
+      image     = "your-aws-account-id.dkr.ecr.us-east-1.amazonaws.com/rag-copilot:latest" # Uses the exact same ECR image
+      essential = true
+      command   = ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+      portMappings = [
+        {
+          containerPort = 8501
+          hostPort      = 8501
+          protocol      = "tcp"
+        }
+      ]
+      # The UI does not need database credentials or secrets; it relies on the API via localhost
     }
   ])
 }

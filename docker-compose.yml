@@ -24,6 +24,27 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  # 3. FastAPI Backend
+  api:
+    build: .
+    container_name: rag_api
+    ports:
+      - "8000:8000"
+      - "8501:8501"
+    depends_on:
+      - postgres
+      - qdrant
+    env_file: .env 
+
+  # 4. Streamlit UI (Sidecar)
+  ui:
+    build: .
+    container_name: rag_ui
+    network_mode: "service:api" 
+    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    depends_on:
+      - api
+
 volumes:
   postgres_data:
   qdrant_data:
