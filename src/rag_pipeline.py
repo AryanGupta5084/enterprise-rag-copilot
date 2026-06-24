@@ -8,6 +8,11 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_community.tools.tavily_search import TavilySearchResults
 
 load_dotenv()
+class CRAGEvaluation(BaseModel):
+    """Pydantic schema for the CRAG LLM Grader."""
+    score: float = Field(description="A relevance score between 0.0 and 1.0 indicating how well the context answers the query.")
+    reasoning: str = Field(description="Brief explanation for the given score.")
+
 class SelfRAGEvaluation(BaseModel):
     """Pydantic schema for the Self-RAG LLM Judge."""
     score: float = Field(description="A score between 0.0 and 1.0 indicating how well the answer is grounded in the context. 1.0 is perfect, 0.0 is hallucinated.")
@@ -85,21 +90,62 @@ def generate_final_answer(query: str, context_docs: list) -> str:
                 
             print("🔄 [L9 Guardrail] Retrying LLM generation to correct formatting...")
 
+def perform_tavily_fallback(query: str) -> list:
+    """Helper function to execute the Tavily Web Search."""
+    try:
+        tavily = TavilySearchResults(max_results=2)
+        web_docs = tavily.invoke(query)
+        print("✅ [Tavily] Fallback web search successful.")
+        return [{"text": doc["content"], "source": "tavily_web"} for doc in web_docs]
+    except Exception as e:
+        print(f"❌ [CRAG Grader] Tavily search failed: {e}")
+        return []
+
 def crag_grader_and_fallback(query: str, retrieved_docs: list) -> list:
-    """CRAG Grader: Evaluates relevance and triggers Tavily Web Fallback if needed."""
+    """
+    CRAG Grader: Uses an LLM Judge to dynamically evaluate document relevance. 
+    If the relevance score is < 0.7, it triggers a web search fallback via Tavily.
+    """
     print("\n⚖️ [CRAG Grader] Evaluating retrieval relevance...")
+    
     if not retrieved_docs:
-        print("⚠️ [CRAG Grader] No docs retrieved. Triggering Tavily Web Fallback...")
-        try:
-            tavily = TavilySearchResults(max_results=2)
-            web_docs = tavily.invoke(query)
-            print("✅ [Tavily] Fallback web search successful.")
-            return [{"text": doc["content"], "source": "tavily_web"} for doc in web_docs]
-        except Exception as e:
-            print(f"❌ [CRAG Grader] Tavily search failed: {e}")
-            return []
-    print("✅ [CRAG Grader] Context is highly relevant.")
-    return retrieved_docs
+        print("⚠️ [CRAG Grader] No docs retrieved from vector store. Triggering Tavily Web Fallback...")
+        return perform_tavily_fallback(query)
+
+    if isinstance(retrieved_docs, list) and isinstance(retrieved_docs, dict):
+        context_text = "\n\n".join([str(doc.get("text", doc.get("document", doc))) for doc in retrieved_docs])
+    else:
+        context_text = "\n\n".join([str(doc) for doc in retrieved_docs])
+
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
+    structured_evaluator = llm.with_structured_output(CRAGEvaluation)
+    
+    prompt = PromptTemplate.from_template(
+        "You are a strict grading evaluator for an Enterprise AI system.\n"
+        "Given the user's query and the retrieved document context, evaluate if the context contains highly relevant information to answer the query.\n\n"
+        "Query: {query}\n\n"
+        "Context:\n{context}\n\n"
+        "Provide a score between 0.0 (completely irrelevant) and 1.0 (highly relevant and contains the exact answer)."
+    )
+    
+    chain = prompt | structured_evaluator
+    
+    try:
+        evaluation = chain.invoke({"context": context_text, "query": query})
+        score = evaluation.score
+        
+        print(f"✅ [CRAG Grader] LLM Judge Evaluation Complete. Score: {score} | Reasoning: {evaluation.reasoning}")
+        
+        if score < 0.7:
+            print(f"⚠️ [CRAG Grader] Score {score} is below the 0.7 threshold. Triggering Tavily Web Fallback...")
+            return perform_tavily_fallback(query)
+            
+        print("✅ [CRAG Grader] Context is highly relevant. Proceeding with Qdrant docs.")
+        return retrieved_docs
+        
+    except Exception as e:
+        print(f"⚠️ [CRAG Grader] Evaluation failed due to an error: {e}. Defaulting to Qdrant docs.")
+        return retrieved_docs
 
 def self_rag_reflect(query: str, context_docs: list, final_answer: str) -> tuple[float, str]:
     """
