@@ -16,7 +16,17 @@ try:
 except Exception as e:
     print(f"❌ Qdrant connection failed: {e}")
 
-redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+try:
+    redis_client = redis.Redis(
+        host=os.getenv("UPSTASH_REDIS_HOST"),
+        port=int(os.getenv("UPSTASH_REDIS_PORT", 6379)),
+        password=os.getenv("UPSTASH_REDIS_PASSWORD"),
+        ssl=True,
+        decode_responses=True
+    )
+    print("✅ Successfully connected to Serverless Upstash Redis!")
+except Exception as e:
+    print(f"❌ Failed to connect to Upstash Redis: {e}")
 
 try:
     embedding_model = HuggingFaceEmbeddings(model_name="BAAI/bge-base-en-v1.5")

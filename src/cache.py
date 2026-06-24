@@ -1,8 +1,18 @@
+import os
 import redis
 import json
 import hashlib
-
-redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+try:
+    redis_client = redis.Redis(
+        host=os.getenv("UPSTASH_REDIS_HOST"),
+        port=int(os.getenv("UPSTASH_REDIS_PORT", 6379)),
+        password=os.getenv("UPSTASH_REDIS_PASSWORD"),
+        ssl=True,
+        decode_responses=True
+    )
+    print("✅ Successfully connected to Serverless Upstash Redis!")
+except Exception as e:
+    print(f"❌ Failed to connect to Upstash Redis: {e}")
 
 TTL_SQL_GEN    = 24 * 60 * 60
 TTL_SQL_RESULT = 15 * 60
