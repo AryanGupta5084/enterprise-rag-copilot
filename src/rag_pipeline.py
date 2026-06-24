@@ -46,10 +46,10 @@ def generate_hyde_documents(user_query: str) -> list[str]:
 
 def generate_final_answer(query: str, context_docs: list) -> str:
     """
-    LLM Answer Generation: Takes the verified context and generates a final answer 
-    strictly bound by the L9 Pydantic Guardrail.
+    LLM Answer Generation strictly bound by the L9 Pydantic Guardrail,
+    now featuring explicit retry logic on schema failure.
     """
-    print("\n🟣 [RAG Pipeline] Generating Final Answer with L9 Schema Validation...")
+    print("\n🟣 [RAG Pipeline] Generating Final Answer with L9 Schema Validation & Retry Logic...")
     
     if context_docs and isinstance(context_docs, dict):
         context_text = "\n\n".join([str(doc.get("text", doc.get("document", doc))) for doc in context_docs])
@@ -68,13 +68,22 @@ def generate_final_answer(query: str, context_docs: list) -> str:
     
     chain = prompt | structured_llm
     
-    try:
-        response_obj = chain.invoke({"context": context_text, "query": query})
-        print(f"✅ [L9 Guardrail] Output successfully validated. Confidence: {response_obj.confidence_score}")
-        return response_obj.answer
-    except Exception as e:
-        print(f"❌ [L9 Guardrail] Schema validation failed after retries: {e}")
-        return "I apologize, but I encountered an internal formatting error while synthesizing the data. Please try again."
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response_obj = chain.invoke({"context": context_text, "query": query})
+            
+            print(f"✅ [L9 Guardrail] Output successfully validated on attempt {attempt + 1}. Confidence: {response_obj.confidence_score}")
+            return response_obj.answer
+            
+        except Exception as e:
+            print(f"⚠️ [L9 Guardrail] Schema validation failed (Attempt {attempt + 1}/{max_retries}). Error: {e}")
+            
+            if attempt == max_retries - 1:
+                print("❌ [L9 Guardrail] Max retries reached. Triggering safe fallback.")
+                return "I apologize, but I encountered an internal formatting error while synthesizing the data. Please try again."
+                
+            print("🔄 [L9 Guardrail] Retrying LLM generation to correct formatting...")
 
 def crag_grader_and_fallback(query: str, retrieved_docs: list) -> list:
     """CRAG Grader: Evaluates relevance and triggers Tavily Web Fallback if needed."""
