@@ -8,6 +8,10 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_community.tools.tavily_search import TavilySearchResults
 
 load_dotenv()
+class SelfRAGEvaluation(BaseModel):
+    """Pydantic schema for the Self-RAG LLM Judge."""
+    score: float = Field(description="A score between 0.0 and 1.0 indicating how well the answer is grounded in the context. 1.0 is perfect, 0.0 is hallucinated.")
+    reasoning: str = Field(description="Brief explanation for the given score.")
 
 class CopilotResponse(BaseModel):
     """L9 Guardrail: Strict schema definition for the final LLM output."""
@@ -90,12 +94,43 @@ def crag_grader_and_fallback(query: str, retrieved_docs: list) -> list:
 
 def self_rag_reflect(query: str, context_docs: list, final_answer: str) -> tuple[float, str]:
     """
-    Self-RAG Reflection: Evaluates the generated answer against the context.
-    Returns a tuple of (score, evaluated_answer) for the graph-native router.
+    Self-RAG Reflection: Uses an LLM Judge to dynamically evaluate the generated answer 
+    against the context. Returns a tuple of (score, evaluated_answer) for the LangGraph router.
     """
-    print("\n🟣 [Self-RAG] Running reflection and fact-checking...")
+    print("\n🟣 [Self-RAG] Running true LLM reflection and fact-checking...")
     
-    simulated_score = 1.0 
+    if context_docs and isinstance(context_docs, dict):
+        context_text = "\n\n".join([str(doc.get("text", doc.get("document", doc))) for doc in context_docs])
+    else:
+        context_text = "\n\n".join([str(doc) for doc in context_docs])
+        
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
+    structured_evaluator = llm.with_structured_output(SelfRAGEvaluation)
     
-    print(f"✅ [Self-RAG] Answer evaluated. Score: {simulated_score}")
-    return simulated_score, final_answer
+    prompt = PromptTemplate.from_template(
+        "You are a strict grading evaluator for an Enterprise AI system.\n"
+        "Given the user's query, the retrieved context, and the AI's generated answer, "
+        "evaluate if the AI's answer is factual, strictly grounded in the context, and answers the query.\n\n"
+        "Context:\n{context}\n\n"
+        "Query: {query}\n\n"
+        "AI Answer: {answer}\n\n"
+        "Provide a score between 0.0 (total hallucination or irrelevant) and 1.0 (perfectly grounded and accurate)."
+    )
+    
+    chain = prompt | structured_evaluator
+    
+    try:
+        evaluation = chain.invoke({
+            "context": context_text, 
+            "query": query, 
+            "answer": final_answer
+        })
+        
+        score = evaluation.score
+        print(f"✅ [Self-RAG] LLM Judge Evaluation Complete. Score: {score} | Reasoning: {evaluation.reasoning}")
+        
+        return float(score), final_answer
+        
+    except Exception as e:
+        print(f"⚠️ [Self-RAG] Evaluation failed due to an error: {e}. Defaulting to passing score to prevent infinite loops.")
+        return 1.0, final_answer
