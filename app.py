@@ -1,84 +1,91 @@
 import streamlit as st
 import requests
+import re
 
-st.set_page_config(page_title="Enterprise RAG Copilot")
-st.title("Enterprise RAG Copilot")
-st.markdown("Your highly secure Kubernetes IT Operations Assistant.")
+API_BASE_URL = "http://localhost:8000"
 
-if "jwt_token" not in st.session_state:
-    st.session_state.jwt_token = None
+st.title("Enterprise RAG Copilot 🛡️")
+st.markdown("Kubernetes SRE copilot using LangGraph, Qdrant, Postgres, and Redis.")
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "pending_thread_id" not in st.session_state:
+    st.session_state.pending_thread_id = None
+if "pending_sql" not in st.session_state:
+    st.session_state.pending_sql = None
 
-if st.session_state.jwt_token is None:
-    st.subheader("Login to Access the Copilot")
-    st.markdown("Please authenticate to access the secure RAG pipeline.")
-    
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submit_button = st.form_submit_button("Login")
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if "sql" in msg:
+            st.code(msg["sql"], language="sql")
+
+if st.session_state.pending_thread_id:
+    with st.chat_message("assistant"):
+        st.warning("⚠️ **Human-in-the-Loop Approval Required**")
+        st.write("The AI generated the following SQL query. Do you approve its execution?")
+        st.code(st.session_state.pending_sql, language="sql")
         
-        if submit_button:
-            try:
-                response = requests.post(
-                    "http://localhost:8000/login",
-                    data={"username": username, "password": password}
-                )
+        col1, col2 = st.columns(2)
+        
+        if col1.button("✅ Approve Execution", use_container_width=True):
+            with st.spinner("Executing approved query..."):
+                headers = {"Authorization": f"Bearer {st.session_state.get('token', 'your_jwt_here')}"}
+                payload = {
+                    "thread_id": st.session_state.pending_thread_id,
+                    "is_approved": True
+                }
                 
-                if response.status_code == 200:
-                    st.session_state.jwt_token = response.json().get("access_token")
-                    st.success("Login successful! Loading Copilot...")
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password.")
-            except requests.exceptions.ConnectionError:
-                st.error("Failed to connect to the backend. Is FastAPI running?")
-
-else:
-    st.sidebar.header("Account")
-    if st.sidebar.button("Logout"):
-        st.session_state.jwt_token = None
-        st.session_state.messages = []
-        st.rerun()
-
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    if prompt := st.chat_input("E.g., How do I restart a crashlooping pod?"):
-        
-        st.chat_message("user").markdown(prompt)
-        st.session_state.messages.append({"role": "user", "content": prompt})
-
-        with st.chat_message("assistant"):
-            with st.spinner("Analyzing intent and routing through security pipeline..."):
                 try:
-                    headers = {
-                        "Authorization": f"Bearer {st.session_state.jwt_token}",
-                        "Content-Type": "application/json"
-                    }
+                    response = requests.post(f"{API_BASE_URL}/approve", json=payload, headers=headers)
+                    data = response.json()
                     
-                    response = requests.post(
-                        "http://localhost:8000/ask",
-                        json={"query": prompt},
-                        headers=headers
-                    )
+                    st.session_state.pending_thread_id = None
+                    st.session_state.pending_sql = None
                     
-                    if response.status_code == 200:
-                        data = response.json()
-                        if "⚠️" in data.get("status", ""):
-                            st.warning(data["final_answer"])
-                            st.code(data.get("generated_sql", ""), language="sql")
-                        else:
-                            answer = data.get("final_answer", "")
-                            st.markdown(answer)
-                            st.session_state.messages.append({"role": "assistant", "content": answer})
+                    st.session_state.messages.append({"role": "assistant", "content": data.get("final_answer", "")})
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error communicating with backend: {e}")
                     
-                    elif response.status_code == 401:
-                        st.error("Your session has expired. Please log out and log back in.")
+        if col2.button("❌ Reject Query", type="primary", use_container_width=True):
+            st.session_state.pending_thread_id = None
+            st.session_state.pending_sql = None
+            st.session_state.messages.append({"role": "assistant", "content": "SQL execution was rejected by the administrator."})
+            st.rerun()
+
+elif prompt := st.chat_input("Ask about Kubernetes or live metrics..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Processing through 9-Layer Security Pipeline..."):
+            headers = {"Authorization": f"Bearer {st.session_state.get('token', 'your_jwt_here')}"}
+            payload = {"query": prompt}
+            
+            try:
+                response = requests.post(f"{API_BASE_URL}/ask", json=payload, headers=headers)
+                data = response.json()
+                
+                if data.get("status") == "pending_approval":
+                    match = re.search(r"thread_id:\s*([a-f0-9\-]+)", data.get("message", ""))
+                    if match:
+                        st.session_state.pending_thread_id = match.group(1)
+                        st.session_state.pending_sql = data.get("generated_sql", "")
+                        st.rerun()
                     else:
-                        st.error(f"Security/System Guardrail Triggered (Status {response.status_code}):\n {response.text}")
+                        st.error("Failed to parse Thread ID for approval.")
+                else:
+                    final_answer = data.get("final_answer", "")
+                    st.markdown(final_answer)
+                    if data.get("generated_sql"):
+                        st.code(data.get("generated_sql"), language="sql")
                         
-                except requests.exceptions.ConnectionError:
-                    st.error("Failed to connect to the FastAPI backend.")
+                    msg_obj = {"role": "assistant", "content": final_answer}
+                    if data.get("generated_sql"):
+                        msg_obj["sql"] = data.get("generated_sql")
+                    st.session_state.messages.append(msg_obj)
+                    
+            except Exception as e:
+                st.error(f"Failed to connect to backend: {e}")
