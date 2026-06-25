@@ -1,37 +1,69 @@
+import os
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
 import psycopg2
 import psycopg2.extras
 
-DB_SCHEMA = """
-Table: clusters
-Columns: cluster_id (INT), name (VARCHAR), region (VARCHAR), status (VARCHAR)
+DB_URI = os.getenv("DB_URI", "postgresql://postgres:postgres@localhost:5432/postgres")
 
-Table: nodes
-Columns: node_id (INT), cluster_id (INT), name (VARCHAR), instance_type (VARCHAR), status (VARCHAR)
+_CACHED_SCHEMA = None
 
-Table: pods
-Columns: pod_id (INT), namespace (VARCHAR), name (VARCHAR), status (VARCHAR), restart_count (INT)
+def get_dynamic_schema() -> str:
+    """
+    Dynamically extracts the schema (tables and columns) from the live PostgreSQL database.
+    Caches the result in memory to reduce database load on subsequent queries.
+    """
+    global _CACHED_SCHEMA
+    if _CACHED_SCHEMA:
+        return _CACHED_SCHEMA
 
-Table: services
-Columns: service_id (INT), namespace (VARCHAR), name (VARCHAR), type (VARCHAR), cluster_ip (VARCHAR)
-
-Table: deployments
-Columns: deployment_id (INT), namespace (VARCHAR), name (VARCHAR), replicas (INT), available_replicas (INT)
-
-Table: incidents
-Columns: incident_id (INT), description (TEXT), severity (VARCHAR), status (VARCHAR), created_at (TIMESTAMP)
-
-Table: alerts
-Columns: alert_id (INT), alert_name (VARCHAR), component (VARCHAR), is_active (BOOLEAN)
-"""
+    print("🔍 [Text2SQL] Fetching dynamic schema from Postgres information_schema...")
+    try:
+        conn = psycopg2.connect(DB_URI)
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        schema_query = """
+            SELECT table_name, column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+            ORDER BY table_name, ordinal_position;
+        """
+        cursor.execute(schema_query)
+        rows = cursor.fetchall()
+        
+        schema_dict = {}
+        for row in rows:
+            t_name = row['table_name']
+            if t_name not in schema_dict:
+                schema_dict[t_name] = []
+            
+            data_type = row['data_type'].upper()
+            schema_dict[t_name].append(f"{row['column_name']} ({data_type})")
+            
+        formatted_schema = ""
+        for table, cols in schema_dict.items():
+            formatted_schema += f"Table: {table}\nColumns: {', '.join(cols)}\n\n"
+            
+        cursor.close()
+        conn.close()
+        
+        _CACHED_SCHEMA = formatted_schema.strip()
+        print("✅ [Text2SQL] Dynamic schema loaded successfully.")
+        return _CACHED_SCHEMA
+        
+    except Exception as e:
+        print(f"❌ [Text2SQL] Failed to fetch dynamic schema: {e}")
+        return "Error: Unable to retrieve database schema."
 
 def generate_sql(query: str) -> str:
     """
     Text2SQL: Generates a schema-aware SQL query from natural language.
     """
     print("\n🛠️ [Text2SQL] Generating SQL query from natural language...")
+    
+    live_schema = get_dynamic_schema()
+    
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
     
     prompt = PromptTemplate.from_template(
@@ -44,7 +76,7 @@ def generate_sql(query: str) -> str:
     chain = prompt | llm | StrOutputParser()
     
     try:
-        sql_query = chain.invoke({"schema": DB_SCHEMA, "query": query})
+        sql_query = chain.invoke({"schema": live_schema, "query": query})
         sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
         print(f"✅ [Text2SQL] Generated Query: {sql_query}")
         return sql_query
@@ -73,17 +105,14 @@ def validate_sql(sql_query: str) -> bool:
     print("✅ [Text2SQL] Query validation passed. Safe to execute.")
     return True
 
-DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres"
-
 def execute_sql(sql_query: str) -> list[dict]:
     """
-    Execute SQL: Runs the validated SELECT query against the PostgreSQL 16 database.
+    Execute SQL: Runs the validated SELECT query against the PostgreSQL database.
     """
-    print("\n🐘 [Text2SQL] Executing query against PostgreSQL 16...")
+    print("\n🐘 [Text2SQL] Executing query against PostgreSQL...")
     
     try:
         conn = psycopg2.connect(DB_URI)
-        
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         cursor.execute(sql_query)
@@ -100,7 +129,6 @@ def execute_sql(sql_query: str) -> list[dict]:
     except Exception as e:
         print(f"❌ [Text2SQL] PostgreSQL Execution Error: {e}")
         return [{"error": str(e)}]
-
 
 def format_sql_results(db_results: list[dict]) -> list[dict]:
     """
