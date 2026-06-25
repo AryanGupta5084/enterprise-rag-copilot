@@ -14,25 +14,46 @@ variable "vpc_id" {
   default     = "vpc-xxxxxxxx"
 }
 
-resource "aws_security_group" "app_sg" {
-  name        = "enterprise-rag-app-sg"
-  description = "Security group for ECS Fargate tasks"
+resource "aws_security_group" "alb_sg" {
+  name        = "enterprise-rag-alb-sg"
+  description = "Allow public HTTPS traffic to ALB"
   vpc_id      = var.vpc_id
 
   ingress {
-    description = "FastAPI Port"
-    from_port   = 8000
-    to_port     = 8000
+    description = "HTTPS from anywhere"
+    from_port   = 443
+    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    description = "Streamlit UI Port"
-    from_port   = 8501
-    to_port     = 8501
-    protocol    = "tcp"
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "app_sg" {
+  name        = "enterprise-rag-app-sg"
+  description = "Security group for ECS Fargate tasks (Private)"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description     = "FastAPI Port via ALB"
+    from_port       = 8000
+    to_port         = 8000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  ingress {
+    description     = "Streamlit UI Port via ALB"
+    from_port       = 8501
+    to_port         = 8501
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
   }
 
   egress {
@@ -64,7 +85,6 @@ resource "aws_security_group" "db_sg" {
   }
 }
 
-# Qdrant Vector DB Security Group
 resource "aws_security_group" "qdrant_sg" {
   name        = "enterprise-rag-qdrant-sg"
   description = "Allow Qdrant traffic strictly from the ECS App Tasks"
@@ -113,7 +133,6 @@ resource "aws_instance" "qdrant_node" {
   }
 
   user_data = <<-EOF
-              #!/bin/bash
               sudo apt-get update -y
               sudo apt-get install -y docker.io
               sudo systemctl start docker
@@ -142,7 +161,51 @@ resource "aws_secretsmanager_secret" "copilot_secrets" {
   description = "API keys for Tavily, Upstash, and Google/OpenAI"
 }
 
-# --- COMPUTE & ORCHESTRATION LAYER (ECS FARGATE) ---
+# --- NEW: LOAD BALANCER & NETWORKING ---
+
+resource "aws_lb" "rag_alb" {
+  name               = "enterprise-rag-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = ["subnet-xxxxxx", "subnet-yyyyyy"]
+}
+
+resource "aws_lb_target_group" "rag_api_tg" {
+  name        = "enterprise-rag-api-tg"
+  port        = 8000
+  protocol    = "HTTP"
+  vpc_id      = var.vpc_id
+  target_type = "ip"
+
+  health_check {
+    path                = "/health"
+    healthy_threshold   = 3
+    unhealthy_threshold = 2
+    timeout             = 5
+    interval            = 30
+    matcher             = "200"
+  }
+}
+
+data "aws_acm_certificate" "api_cert" {
+  domain   = "api.yourdomain.com"
+  statuses = ["ISSUED"]
+}
+
+# HTTPS Listener
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.rag_alb.arn
+  port              = "443"
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-2016-08"
+  certificate_arn   = data.aws_acm_certificate.api_cert.arn
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.rag_api_tg.arn
+  }
+}
 
 resource "aws_ecs_cluster" "rag_cluster" {
   name = "enterprise-rag-copilot-cluster"
@@ -154,7 +217,7 @@ resource "aws_ecs_task_definition" "rag_task" {
   requires_compatibilities = ["FARGATE"]
   cpu                      = "1024" 
   memory                   = "2048" 
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn # Assumed IAM executor setup exists
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
 
   container_definitions = jsonencode([
     {
@@ -215,7 +278,13 @@ resource "aws_ecs_service" "rag_service" {
 
   network_configuration {
     subnets          = ["subnet-xxxxxx", "subnet-yyyyyy"] 
-    assign_public_ip = true
+    assign_public_ip = false
     security_groups  = [aws_security_group.app_sg.id]
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.rag_api_tg.arn
+    container_name   = "rag-copilot-api"
+    container_port   = 8000
   }
 }
