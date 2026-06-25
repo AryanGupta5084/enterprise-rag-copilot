@@ -1,6 +1,26 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    upstash = {
+      source  = "upstash/upstash"
+      version = "~> 1.5"
+    }
+  }
+}
+
 provider "aws" {
   region = "us-east-1"
 }
+
+provider "upstash" {
+  email   = var.upstash_email
+  api_key = var.upstash_api_key
+}
+
+# --- VARIABLES ---
 
 variable "db_password" {
   type        = string
@@ -13,6 +33,32 @@ variable "vpc_id" {
   description = "The target VPC ID where the infrastructure will be deployed"
   default     = "vpc-xxxxxxxx"
 }
+
+variable "upstash_email" {
+  type        = string
+  description = "Email associated with your Upstash account"
+  sensitive   = true
+}
+
+variable "upstash_api_key" {
+  type        = string
+  description = "Upstash Management API Key"
+  sensitive   = true
+}
+
+variable "tavily_api_key" {
+  type        = string
+  description = "Tavily Web Search API Key"
+  sensitive   = true
+}
+
+variable "google_api_key" {
+  type        = string
+  description = "Google Gemini API Key"
+  sensitive   = true
+}
+
+# --- SECURITY GROUPS ---
 
 resource "aws_security_group" "alb_sg" {
   name        = "enterprise-rag-alb-sg"
@@ -106,6 +152,8 @@ resource "aws_security_group" "qdrant_sg" {
   }
 }
 
+# --- PERSISTENT DATA STORES ---
+
 resource "aws_db_instance" "postgres_checkpointer" {
   identifier             = "enterprise-rag-postgres"
   engine                 = "postgres"
@@ -133,6 +181,7 @@ resource "aws_instance" "qdrant_node" {
   }
 
   user_data = <<-EOF
+              #!/bin/bash
               sudo apt-get update -y
               sudo apt-get install -y docker.io
               sudo systemctl start docker
@@ -156,12 +205,31 @@ resource "aws_s3_bucket" "raw_corpus_bucket" {
   bucket = "enterprise-rag-raw-corpus-bucket"
 }
 
+resource "upstash_redis_database" "rag_cache" {
+  database_name = "enterprise-rag-cache"
+  region        = "us-east-1" 
+  tls           = true
+}
+
+# --- SECRETS MANAGEMENT ---
+
 resource "aws_secretsmanager_secret" "copilot_secrets" {
   name        = "enterprise-rag-api-secrets"
   description = "API keys for Tavily, Upstash, and Google/OpenAI"
 }
 
-# --- NEW: LOAD BALANCER & NETWORKING ---
+resource "aws_secretsmanager_secret_version" "copilot_secrets_version" {
+  secret_id     = aws_secretsmanager_secret.copilot_secrets.id
+  secret_string = jsonencode({
+    TAVILY_API_KEY         = var.tavily_api_key
+    GOOGLE_API_KEY         = var.google_api_key
+    UPSTASH_REDIS_HOST     = upstash_redis_database.rag_cache.endpoint
+    UPSTASH_REDIS_PASSWORD = upstash_redis_database.rag_cache.password
+    UPSTASH_REDIS_PORT     = upstash_redis_database.rag_cache.port
+  })
+}
+
+# --- LOAD BALANCER & NETWORKING ---
 
 resource "aws_lb" "rag_alb" {
   name               = "enterprise-rag-alb"
@@ -193,7 +261,6 @@ data "aws_acm_certificate" "api_cert" {
   statuses = ["ISSUED"]
 }
 
-# HTTPS Listener
 resource "aws_lb_listener" "https" {
   load_balancer_arn = aws_lb.rag_alb.arn
   port              = "443"
@@ -206,6 +273,8 @@ resource "aws_lb_listener" "https" {
     target_group_arn = aws_lb_target_group.rag_api_tg.arn
   }
 }
+
+# --- COMPUTE & ORCHESTRATION LAYER (ECS FARGATE) ---
 
 resource "aws_ecs_cluster" "rag_cluster" {
   name = "enterprise-rag-copilot-cluster"
