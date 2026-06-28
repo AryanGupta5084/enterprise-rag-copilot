@@ -102,7 +102,7 @@ def ingest_data(s3_bucket: str = None, local_dir: str = "./data/raw_pdfs"):
                         id=chunk_id,
                         vector={
                             "default": dense_vec, 
-                            "bm25": {"indices": sparse_vec.indices.tolist(), "values": sparse_vec.values.tolist()}
+                            "bm25": {"indices": sparse_vec[0].indices.tolist(), "values": sparse_vec[0].values.tolist()}
                         },
                         payload={
                             "text": chunk, 

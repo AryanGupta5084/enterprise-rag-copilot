@@ -7,6 +7,25 @@ API_BASE_URL = "http://localhost:8000"
 st.title("Enterprise RAG Copilot 🛡️")
 st.markdown("Kubernetes SRE copilot using LangGraph, Qdrant, Postgres, and Redis.")
 
+if "token" not in st.session_state:
+    st.sidebar.title("Login Required")
+    username = st.sidebar.text_input("Username")
+    password = st.sidebar.text_input("Password", type="password")
+    
+    if st.sidebar.button("Login"):
+        with st.spinner("Authenticating..."):
+            resp = requests.post(
+                f"{API_BASE_URL}/login", 
+                data={"username": username, "password": password}
+            )
+            if resp.status_code == 200:
+                st.session_state.token = resp.json()["access_token"]
+                st.sidebar.success("Logged in!")
+                st.rerun()
+            else:
+                st.sidebar.error("Invalid credentials.")
+    st.stop()
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "pending_thread_id" not in st.session_state:

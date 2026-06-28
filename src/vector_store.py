@@ -7,11 +7,12 @@ from qdrant_client.models import Distance, VectorParams, SparseVectorParams, Spa
 from langchain_huggingface import HuggingFaceEmbeddings
 from sentence_transformers import CrossEncoder
 from fastembed import SparseTextEmbedding
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 load_dotenv()
 
 try:
-    qdrant = QdrantClient(host="localhost", port=6333)
+    qdrant = QdrantClient(host="qdrant", port=6333)
     print("✅ Qdrant connection established.")
 except Exception as e:
     print(f"❌ Qdrant connection failed: {e}")
@@ -63,20 +64,21 @@ def get_embedding_with_cache(text: str) -> list[float]:
 COLLECTION_NAME = "kubernetes_kb"
 
 def init_qdrant_collection():
-    """Creates the 768-dim Qdrant collection only if it doesn't exist."""
-    collections_response = qdrant.get_collections()
-    collection_names = [collection.name for collection in collections_response.collections]
-    
-    if COLLECTION_NAME not in collection_names:
-        print(f"📦 Creating new Qdrant collection: '{COLLECTION_NAME}' with Dense & Sparse vectors...")
+    """Creates the 768-dim Qdrant collection, gracefully ignoring if it already exists."""
+    try:
+        print(f"📦 Attempting to create Qdrant collection: '{COLLECTION_NAME}'...")
         qdrant.create_collection(
             collection_name=COLLECTION_NAME,
-            vectors_config=VectorParams(size=768, distance=Distance.COSINE),
+            vectors_config={"default": VectorParams(size=768, distance=Distance.COSINE)},
             sparse_vectors_config={"bm25": SparseVectorParams()}
         )
         print("✅ Collection created successfully.")
-    else:
-        print(f"✅ Qdrant collection '{COLLECTION_NAME}' already exists and is ready.")
+        
+    except UnexpectedResponse as e:
+        if getattr(e, 'status_code', None) == 409 or "already exists" in str(e):
+            print(f"✅ Qdrant collection '{COLLECTION_NAME}' already exists and is ready.")
+        else:
+            raise e
 
 init_qdrant_collection()
 

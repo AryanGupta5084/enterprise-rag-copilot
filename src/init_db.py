@@ -1,6 +1,6 @@
 import psycopg2
 
-DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres"
+DB_URI = "postgresql://postgres:postgres@postgres:5432/postgres"
 
 def init_postgres_db():
     print("🐘 [Postgres Init] Connecting to PostgreSQL...")

@@ -50,7 +50,6 @@ def sql_execution_node(state: GraphState):
 
 def blocked_sql_node(state: GraphState):
     print("\n🔴 [LangGraph Node] SQL Blocked by Guardrails!")
-    # REWRITE: Append to context docs instead of abruptly setting final_answer
     return {"context_docs": [{"text": "[SECURITY GUARDRAIL] SQL execution was blocked due to dangerous keywords."}]}
 
 def rag_retrieval_node(state: GraphState):
@@ -178,7 +177,7 @@ workflow.add_conditional_edges(
 )
 workflow.add_edge("finalize_node", END)
 
-DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres"
+DB_URI = "postgresql://postgres:postgres@postgres:5432/postgres"
 pool = ConnectionPool(conninfo=DB_URI, max_size=5)
 
 def get_compiled_graph():

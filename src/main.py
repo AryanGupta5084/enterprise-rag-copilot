@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request, Depends, HTTPException, OAuth2PasswordRequestForm
+from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from src.router import route_user_query
 from src.rag_pipeline import generate_hyde_documents, crag_grader_and_fallback, generate_final_answer, self_rag_reflect

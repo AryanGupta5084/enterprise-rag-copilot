@@ -5,7 +5,7 @@ from langchain_core.output_parsers import StrOutputParser
 import psycopg2
 import psycopg2.extras
 
-DB_URI = os.getenv("DB_URI", "postgresql://postgres:postgres@localhost:5432/postgres")
+DB_URI = os.getenv("DB_URI", "postgresql://postgres:postgres@postgres:5432/postgres")
 
 _CACHED_SCHEMA = None
 

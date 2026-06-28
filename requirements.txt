@@ -7,12 +7,13 @@ python-dotenv==1.2.2
 qdrant_client==1.18.0
 redis==8.0.0
 uvicorn==0.22.0
+langchain-community
 sentence-transformers
 langchain_tavily
 langgraph
 slowapi
 tiktoken
-psycopg2
+psycopg2-binary
 langgraph-checkpoint-postgres
 psycopg
 streamlit
@@ -22,3 +23,4 @@ llm-guard
 fastembed
 boto3
 pypdf
+python-multipart
