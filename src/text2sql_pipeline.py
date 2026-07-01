@@ -1,4 +1,5 @@
 import os
+from psycopg_pool import ConnectionPool
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
@@ -6,6 +7,7 @@ import psycopg2
 import psycopg2.extras
 
 DB_URI = os.getenv("DB_URI", "postgresql://postgres:postgres@postgres:5432/postgres")
+pool = ConnectionPool(conninfo=DB_URI, max_size=5, kwargs={"autocommit": True})
 
 _CACHED_SCHEMA = None
 

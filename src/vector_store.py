@@ -8,11 +8,13 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from sentence_transformers import CrossEncoder
 from fastembed import SparseTextEmbedding
 from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client import models
 
 load_dotenv()
 
 try:
-    qdrant = QdrantClient(host="qdrant", port=6333)
+    qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
+    qdrant = QdrantClient(url=qdrant_url)
     print("✅ Qdrant connection established.")
 except Exception as e:
     print(f"❌ Qdrant connection failed: {e}")
@@ -88,102 +90,81 @@ def get_sparse_embedding(text: str):
     return sparse_result
 
 
-def calculate_rrf(dense_ranked_docs: list[dict], sparse_ranked_docs: list[dict], k: int = 60) -> list[dict]:
-    """
-    Reciprocal Rank Fusion (RRF) with k=60.
-    Mathematically merges the results of Dense and Sparse retrievals.
-    """
+def calculate_rrf(dense_ranked_docs: list, sparse_ranked_docs: list, k: int = 60) -> list:
+    """ Reciprocal Rank Fusion (RRF) with k=60. Mathematically merges the results of Dense and Sparse retrievals. """
     print(f"🧮 [RAG Pipeline] Fusing Dense and Sparse results using RRF (k={k})...")
     rrf_scores = {}
     doc_store = {}
-
+    
     for rank, doc in enumerate(dense_ranked_docs):
-        doc_id = doc.get("id", doc["text"]) 
+        doc_id = doc.id
         doc_store[doc_id] = doc
-        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (k + rank + 1))
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1 / (k + rank + 1)
         
     for rank, doc in enumerate(sparse_ranked_docs):
-        doc_id = doc.get("id", doc["text"])
-        if doc_id not in doc_store:
-            doc_store[doc_id] = doc
-        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (k + rank + 1))
-        
-    sorted_fused_docs = sorted(rrf_scores.items(), key=lambda item: item[4], reverse=True)
+        doc_id = doc.id
+        doc_store[doc_id] = doc
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1 / (k + rank + 1)
+    sorted_docs = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
     
-    return [doc_store[doc_id] for doc_id, score in sorted_fused_docs]
+    return [doc_store[doc_id] for doc_id, score in sorted_docs]
 
 
 def search_qdrant(queries: list[str], limit: int = 3) -> list[dict]:
-    """
-    Executes TRUE Hybrid Retrieval (Dense + Sparse/BM25) across Qdrant for multiple queries.
-    Merges results using Reciprocal Rank Fusion (RRF).
-    """
+    """ Executes TRUE Hybrid Retrieval using Qdrant's modern query_points API. """
     print(f"\n🔍 [RAG Pipeline] Executing True Hybrid Retrieval (Dense + Sparse/BM25) for {len(queries)} queries...")
+    
     all_fused_results = {}
     
     for query in queries:
-        dense_vector = get_embedding_with_cache(query)
+        dense_embedding = get_embedding_with_cache(query)
+        sparse_embedding_list = get_sparse_embedding(query)
+        
+        sparse_vector = sparse_embedding_list[0]
+        
         dense_response = qdrant.query_points(
             collection_name=COLLECTION_NAME,
-            query=dense_vector,
+            query=dense_embedding, 
+            using="default",
             limit=limit
         )
-        
-        dense_results = [
-            {"id": hit.id, "text": hit.payload["text"], "dense_score": hit.score}
-            for hit in dense_response.points
-        ]
-        
-        sparse_vector = get_sparse_embedding(query)
+
         sparse_response = qdrant.query_points(
             collection_name=COLLECTION_NAME,
-            query=SparseVector(
-                indices=sparse_vector.indices.tolist(),
-                values=sparse_vector.values.tolist()
+            query=models.SparseVector(
+                indices=sparse_vector.indices,
+                values=sparse_vector.values
             ),
             using="bm25",
             limit=limit
         )
         
-        sparse_results = [
-            {"id": hit.id, "text": hit.payload["text"], "sparse_score": hit.score}
-            for hit in sparse_response.points
-        ]
+        fused = calculate_rrf(dense_response.points, sparse_response.points)
         
-        fused_docs = calculate_rrf(dense_results, sparse_results, k=60)
-        
-        for doc in fused_docs:
-            doc_id = doc.get("id", doc["text"])
-            all_fused_results[doc_id] = doc
+        for doc in fused:
+            all_fused_results[doc.id] = doc
             
-    final_docs = list(all_fused_results.values())
-    print(f"✅ Retrieved and fused {len(final_docs)} unique documents using real BM25 and RRF.")
-    return final_docs
+    return list(all_fused_results.values())
 
-def rerank_documents(query: str, retrieved_docs: list[dict]) -> list[dict]:
-    """
-    Scores and re-orders the retrieved documents using the BGE Cross-Encoder.
-    """
+def rerank_documents(query: str, retrieved_docs: list) -> list[dict]:
+    """ Scores and re-orders the retrieved documents using the BGE Cross-Encoder, 
+        and converts them into standard dictionaries for LangGraph state serialization. """
     print("\n⚖️ [RAG Pipeline] Reranking documents with BGE Cross-Encoder...")
-
+    
     if not retrieved_docs:
-        print("⚠️ No documents to rerank.")
         return []
-
-    model_inputs = [[query, doc["text"]] for doc in retrieved_docs]
-    scores = reranker_model.predict(model_inputs)
-
-    scored_docs = [
-        {
-            "text": doc["text"],
-            "rerank_score": float(score)
-        }
-        for doc, score in zip(retrieved_docs, scores)
-    ]
-
-    scored_docs.sort(key=lambda x: x["rerank_score"], reverse=True)
-
-    if scored_docs:
-        print(f"✅ Reranking complete. Top score: {scored_docs['rerank_score']:.4f}")
-
-    return scored_docs
+        
+    pairs = [[query, doc.payload.get("text", "")] for doc in retrieved_docs]
+    scores = reranker_model.predict(pairs)
+    
+    final_docs = []
+    for doc, score in zip(retrieved_docs, scores):
+        final_docs.append({
+            "id": str(doc.id),
+            "text": doc.payload.get("text", ""),
+            "source": doc.payload.get("source", {}),
+            "score": float(score)
+        })
+        
+    final_docs.sort(key=lambda x: x["score"], reverse=True)
+    return final_docs

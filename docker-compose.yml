@@ -1,16 +1,21 @@
 services:
   # 1. PostgreSQL 16 (Ops DB + LangGraph Checkpoints)
-  postgres:
-    image: postgres:16
-    container_name: rag_postgres
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
-    ports:
-      - "5432:5432"
-    volumes:
+  postgres: 
+    image: postgres:16 
+    container_name: rag_postgres 
+    environment: 
+      POSTGRES_USER: postgres 
+      POSTGRES_PASSWORD: postgres 
+      POSTGRES_DB: postgres 
+    ports: 
+      - "5432:5432" 
+    volumes: 
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   # 2. Qdrant (Dense + Sparse Vector Database)
   qdrant:
@@ -23,22 +28,29 @@ services:
       - qdrant_data:/qdrant/storage
 
   # 3. FastAPI Backend
-  api:
-    build: .
-    container_name: rag_api
-    ports:
-      - "8000:8000"
-      - "8501:8501"
-    depends_on:
-      - postgres
-      - qdrant
+  api: 
+    build: . 
+    container_name: rag_api 
+    ports: 
+      - "8000:8000" 
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on: 
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
     env_file: .env 
+    volumes: 
+      - ./data:/app/data
+      - hf_cache:/root/.cache/huggingface
 
   # 4. Streamlit UI (Sidecar)
   ui:
     build: .
     container_name: rag_ui
-    network_mode: "service:api" 
+    ports:
+      - "8501:8501"
     command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
     depends_on:
       - api
@@ -46,3 +58,4 @@ services:
 volumes:
   postgres_data:
   qdrant_data:
+  hf_cache:

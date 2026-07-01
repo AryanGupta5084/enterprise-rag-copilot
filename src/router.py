@@ -8,15 +8,14 @@ from langchain_core.output_parsers import StrOutputParser
 load_dotenv()
 
 try:
-    # ☁️ Connecting to Upstash Serverless Redis (Aligns with Enterprise Diagram)
     redis_client = redis.Redis(
         host=os.getenv("UPSTASH_REDIS_HOST"),
         port=int(os.getenv("UPSTASH_REDIS_PORT", 6379)),
         password=os.getenv("UPSTASH_REDIS_PASSWORD"),
-        ssl=True, # Required for Upstash Serverless
+        ssl=True,
         decode_responses=True
     )
-    INTENT_CACHE_TTL = 86400 # 24 hours (Matches Tier 2 Cache in Architecture)
+    INTENT_CACHE_TTL = 86400
 except Exception as e:
     print(f"❌ Failed to connect to Upstash Redis: {e}")
 

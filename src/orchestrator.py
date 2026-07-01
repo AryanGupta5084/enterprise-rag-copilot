@@ -1,3 +1,4 @@
+import os
 from typing import TypedDict, List, Dict, Any, Annotated
 import operator
 from langgraph.graph import StateGraph, END
@@ -177,17 +178,17 @@ workflow.add_conditional_edges(
 )
 workflow.add_edge("finalize_node", END)
 
-DB_URI = "postgresql://postgres:postgres@postgres:5432/postgres"
-pool = ConnectionPool(conninfo=DB_URI, max_size=5)
+DB_URI = os.getenv("DB_URI", "postgresql://postgres:postgres@postgres:5432/postgres")
+pool = ConnectionPool(conninfo=DB_URI, max_size=5, kwargs={"autocommit": True})
 
 def get_compiled_graph():
     with pool.connection() as conn:
         checkpointer = PostgresSaver(conn)
         checkpointer.setup() 
         
-    return workflow.compile(
-        checkpointer=checkpointer,
-        interrupt_before=["sql_execution_node"]
-    )
+        return workflow.compile(
+            checkpointer=checkpointer,
+            interrupt_before=["sql_execution_node"]
+        )
 
 app_graph = get_compiled_graph()

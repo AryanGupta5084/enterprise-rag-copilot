@@ -1,6 +1,9 @@
 import psycopg2
+import os
+from psycopg_pool import ConnectionPool
 
-DB_URI = "postgresql://postgres:postgres@postgres:5432/postgres"
+DB_URI = os.getenv("DB_URI", "postgresql://postgres:postgres@postgres:5432/postgres")
+pool = ConnectionPool(conninfo=DB_URI, max_size=5, kwargs={"autocommit": True})
 
 def init_postgres_db():
     print("🐘 [Postgres Init] Connecting to PostgreSQL...")
