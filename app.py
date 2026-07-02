@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import re
 
-API_BASE_URL = "http://api:8000"
+API_BASE_URL = "http://localhost:8000"
 
 st.title("Enterprise RAG Copilot 🛡️")
 st.markdown("Kubernetes SRE copilot using LangGraph, Qdrant, Postgres, and Redis.")

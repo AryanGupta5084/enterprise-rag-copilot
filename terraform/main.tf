@@ -31,7 +31,7 @@ variable "db_password" {
 variable "vpc_id" {
   type        = string
   description = "The target VPC ID where the infrastructure will be deployed"
-  default     = "vpc-xxxxxxxx"
+  default     = "vpc-0ab6ab8cca933cd92"
 }
 
 variable "upstash_email" {
@@ -66,11 +66,19 @@ resource "aws_security_group" "alb_sg" {
   vpc_id      = var.vpc_id
 
   ingress {
-    description = "HTTPS from anywhere"
-    from_port   = 443
-    to_port     = 443
+    description = "HTTP from anywhere"
+    from_port   = 80
+    to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress { 
+    description = "Streamlit UI from anywhere" 
+    from_port   = 8501 
+    to_port     = 8501 
+    protocol    = "tcp" 
+    cidr_blocks = ["0.0.0.0/0"] 
   }
 
   egress {
@@ -172,7 +180,7 @@ resource "aws_instance" "qdrant_node" {
   instance_type = "t3.medium"          
   
   vpc_security_group_ids = [aws_security_group.qdrant_sg.id]
-  subnet_id              = "subnet-xxxxxx"
+  subnet_id              = "subnet-073cb7dfafaa62afb"
 
   root_block_device {
     volume_size           = 50
@@ -207,7 +215,8 @@ resource "aws_s3_bucket" "raw_corpus_bucket" {
 
 resource "upstash_redis_database" "rag_cache" {
   database_name = "enterprise-rag-cache"
-  region        = "us-east-1" 
+  region        = "global" 
+  primary_region = "us-east-1"
   tls           = true
 }
 
@@ -236,7 +245,7 @@ resource "aws_lb" "rag_alb" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb_sg.id]
-  subnets            = ["subnet-xxxxxx", "subnet-yyyyyy"]
+  subnets            = ["subnet-073cb7dfafaa62afb", "subnet-07dcc2ba4afca0f92"]
 }
 
 resource "aws_lb_target_group" "rag_api_tg" {
@@ -256,28 +265,88 @@ resource "aws_lb_target_group" "rag_api_tg" {
   }
 }
 
-data "aws_acm_certificate" "api_cert" {
-  domain   = "api.yourdomain.com"
-  statuses = ["ISSUED"]
-}
-
-resource "aws_lb_listener" "https" {
-  load_balancer_arn = aws_lb.rag_alb.arn
-  port              = "443"
-  protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-2016-08"
-  certificate_arn   = data.aws_acm_certificate.api_cert.arn
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.rag_api_tg.arn
-  }
+resource "aws_lb_listener" "http" { 
+  load_balancer_arn = aws_lb.rag_alb.arn 
+  port              = "80" 
+  protocol          = "HTTP" 
+  
+  default_action { 
+    type             = "forward" 
+    target_group_arn = aws_lb_target_group.rag_api_tg.arn 
+  } 
 }
 
 # --- COMPUTE & ORCHESTRATION LAYER (ECS FARGATE) ---
 
 resource "aws_ecs_cluster" "rag_cluster" {
   name = "enterprise-rag-copilot-cluster"
+}
+
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name = "enterprise-rag-ecs-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
+  role       = aws_iam_role.ecs_task_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "ecs_secrets_policy" {
+  name = "enterprise-rag-secrets-policy"
+  role = aws_iam_role.ecs_task_execution_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          aws_secretsmanager_secret.copilot_secrets.arn
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "ecs_s3_policy" {
+  name = "enterprise-rag-s3-policy"
+  role = aws_iam_role.ecs_task_execution_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+
+        Resource = [
+          aws_s3_bucket.raw_corpus_bucket.arn,
+          "${aws_s3_bucket.raw_corpus_bucket.arn}/*"
+        ]
+      }
+    ]
+  })
 }
 
 resource "aws_ecs_task_definition" "rag_task" {
@@ -290,9 +359,41 @@ resource "aws_ecs_task_definition" "rag_task" {
 
   container_definitions = jsonencode([
     {
+      name      = "db-initializer"
+      image     = "956380159493.dkr.ecr.us-east-1.amazonaws.com/rag-copilot:latest"
+      essential = false
+      command   = ["sh", "-c", "python -m src.init_db && python -m src.ingest"]
+      environment = [
+        { name  = "DB_URI", value = "postgresql://postgres:${var.db_password}@${aws_db_instance.postgres_checkpointer.endpoint}/postgres" },
+        { name  = "S3_CORPUS_BUCKET", value = aws_s3_bucket.raw_corpus_bucket.id },
+        { name  = "QDRANT_URL", value = "http://${aws_instance.qdrant_node.private_ip}:6333" }
+      ]
+      secrets = [
+        { name = "TAVILY_API_KEY", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:TAVILY_API_KEY::" },
+        { name = "UPSTASH_REDIS_HOST", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:UPSTASH_REDIS_HOST::" },
+        { name = "UPSTASH_REDIS_PORT", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:UPSTASH_REDIS_PORT::" }, 
+        { name = "UPSTASH_REDIS_PASSWORD", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:UPSTASH_REDIS_PASSWORD::" },
+        { name = "GOOGLE_API_KEY", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:GOOGLE_API_KEY::" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = "/ecs/enterprise-rag-api"
+          "awslogs-region"        = "us-east-1"
+          "awslogs-stream-prefix" = "ecs-init"
+        }
+      }
+    },
+    {
       name      = "rag-copilot-api"
-      image     = "your-aws-account-id.dkr.ecr.us-east-1.amazonaws.com/rag-copilot:latest"
+      image     = "956380159493.dkr.ecr.us-east-1.amazonaws.com/rag-copilot:latest"
       essential = true
+      dependsOn = [
+        {
+          containerName = "db-initializer"
+          condition     = "SUCCESS"
+        }
+      ]
       portMappings = [
         {
           containerPort = 8000
@@ -301,31 +402,36 @@ resource "aws_ecs_task_definition" "rag_task" {
         }
       ]
       environment = [
-        { 
-          name  = "DB_URI", 
-          value = "postgresql://postgres:${var.db_password}@${aws_db_instance.postgres_checkpointer.endpoint}/postgres" 
-        },
-        {
-          name  = "S3_CORPUS_BUCKET",
-          value = aws_s3_bucket.raw_corpus_bucket.id
-        },
-        {
-          name  = "QDRANT_URL",
-          value = "http://${aws_instance.qdrant_node.private_ip}:6333"
-        }
+        { name  = "DB_URI", value = "postgresql://postgres:${var.db_password}@${aws_db_instance.postgres_checkpointer.endpoint}/postgres" },
+        { name  = "S3_CORPUS_BUCKET", value = aws_s3_bucket.raw_corpus_bucket.id },
+        { name  = "QDRANT_URL", value = "http://${aws_instance.qdrant_node.private_ip}:6333" }
       ]
       secrets = [
         { name = "TAVILY_API_KEY", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:TAVILY_API_KEY::" },
         { name = "UPSTASH_REDIS_HOST", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:UPSTASH_REDIS_HOST::" },
+        { name = "UPSTASH_REDIS_PORT", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:UPSTASH_REDIS_PORT::" }, 
         { name = "UPSTASH_REDIS_PASSWORD", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:UPSTASH_REDIS_PASSWORD::" },
         { name = "GOOGLE_API_KEY", valueFrom = "${aws_secretsmanager_secret.copilot_secrets.arn}:GOOGLE_API_KEY::" }
       ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = "/ecs/enterprise-rag-api"
+          "awslogs-region"        = "us-east-1"
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
     },
-    
     {
       name      = "rag-copilot-ui"
-      image     = "your-aws-account-id.dkr.ecr.us-east-1.amazonaws.com/rag-copilot:latest"
+      image     = "956380159493.dkr.ecr.us-east-1.amazonaws.com/rag-copilot:latest"
       essential = true
+      dependsOn = [
+        {
+          containerName = "rag-copilot-api"
+          condition     = "START"
+        }
+      ]
       command   = ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
       portMappings = [
         {
@@ -334,6 +440,14 @@ resource "aws_ecs_task_definition" "rag_task" {
           protocol      = "tcp"
         }
       ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = "/ecs/enterprise-rag-api"
+          "awslogs-region"        = "us-east-1"
+          "awslogs-stream-prefix" = "ecs-ui"
+        }
+      }
     }
   ])
 }
@@ -346,8 +460,8 @@ resource "aws_ecs_service" "rag_service" {
   desired_count   = 2
 
   network_configuration {
-    subnets          = ["subnet-xxxxxx", "subnet-yyyyyy"] 
-    assign_public_ip = false
+    subnets          = ["subnet-073cb7dfafaa62afb", "subnet-07dcc2ba4afca0f92"] 
+    assign_public_ip = true
     security_groups  = [aws_security_group.app_sg.id]
   }
 
@@ -356,4 +470,43 @@ resource "aws_ecs_service" "rag_service" {
     container_name   = "rag-copilot-api"
     container_port   = 8000
   }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.rag_ui_tg.arn
+    container_name   = "rag-copilot-ui"
+    container_port   = 8501
+  }
+}
+
+resource "aws_cloudwatch_log_group" "api_logs" {
+  name              = "/ecs/enterprise-rag-api"
+  retention_in_days = 7
+}
+
+resource "aws_lb_target_group" "rag_ui_tg" { 
+  name        = "enterprise-rag-ui-tg" 
+  port        = 8501 
+  protocol    = "HTTP" 
+  vpc_id      = var.vpc_id 
+  target_type = "ip" 
+
+  health_check { 
+    path                = "/healthz"  # Streamlit default health check
+    healthy_threshold   = 3 
+    unhealthy_threshold = 2 
+    timeout             = 5 
+    interval            = 30 
+    matcher             = "200" 
+  } 
+}
+
+resource "aws_lb_listener" "ui_http" { 
+  load_balancer_arn = aws_lb.rag_alb.arn 
+  port              = "8501" 
+  protocol          = "HTTP" 
+
+  default_action { 
+    type             = "forward" 
+    target_group_arn = aws_lb_target_group.rag_ui_tg.arn 
+  } 
 }

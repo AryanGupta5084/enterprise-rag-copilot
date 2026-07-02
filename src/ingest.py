@@ -19,9 +19,43 @@ def calculate_document_hash(text: str) -> str:
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 def download_from_s3(bucket_name: str, download_dir: str = "./data/raw_pdfs"):
-    """Pulls the raw corpus from AWS S3 using boto3."""
-    print(f"☁️ [Ingestion] Connecting to S3 Bucket: {bucket_name}...")
-    s3 = boto3.client('s3')
+    """
+    Downloads all PDFs from an S3 bucket into a local directory.
+    """
+    print(f"☁️ [Ingestion] Connecting to S3 Bucket: {bucket_name}")
+
+    os.makedirs(download_dir, exist_ok=True)
+
+    s3 = boto3.client("s3")
+
+    paginator = s3.get_paginator("list_objects_v2")
+
+    downloaded = 0
+
+    for page in paginator.paginate(Bucket=bucket_name):
+        for obj in page.get("Contents", []):
+
+            key = obj["Key"]
+
+            if not key.lower().endswith(".pdf"):
+                continue
+
+            local_path = os.path.join(
+                download_dir,
+                os.path.basename(key)
+            )
+
+            print(f"⬇ Downloading {key}")
+
+            s3.download_file(
+                bucket_name,
+                key,
+                local_path
+            )
+
+            downloaded += 1
+
+    print(f"✅ Downloaded {downloaded} PDF(s) from S3.")
 
 def ingest_data(s3_bucket: str = None, local_dir: str = "./data/raw_pdfs"):
     """
@@ -30,8 +64,11 @@ def ingest_data(s3_bucket: str = None, local_dir: str = "./data/raw_pdfs"):
     """
     print(f"\n📥 Starting Enterprise ingestion into Qdrant collection: '{COLLECTION_NAME}'")
 
+    if s3_bucket:
+        download_from_s3(s3_bucket, local_dir)
+
     if not os.path.exists(local_dir):
-        print(f"❌ Directory {local_dir} not found. Please add your PDFs.")
+        print(f"❌ Directory {local_dir} not found.")
         return
 
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
@@ -77,4 +114,5 @@ def ingest_data(s3_bucket: str = None, local_dir: str = "./data/raw_pdfs"):
         print("⚠️ No data found to ingest.")
 
 if __name__ == "__main__":
-    ingest_data(s3_bucket=None)
+    bucket = os.getenv("S3_CORPUS_BUCKET")
+    ingest_data(s3_bucket=bucket)
