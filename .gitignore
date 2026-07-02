@@ -1,17 +1,25 @@
-# Environments
 venv/
 env/
+.venv/
 
-# Environment Variables
-.env
-
-# Cache and compiled files
 __pycache__/
 *.pyc
 
-# IDEs
+.env
+.env.*
+
 .vscode/
 .idea/
 
-# Database
 *.db
+
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.tfvars
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
